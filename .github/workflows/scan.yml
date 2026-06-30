@@ -13,12 +13,11 @@ jobs:
       
       - uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '24'
           
-      - run: npm install axios cheerio crypto @supabase/supabase-js
+      - run: npm install axios cheerio crypto @supabase/supabase-js ws
       
       - run: node scan-homepage.js
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
- 
