@@ -66,8 +66,21 @@ async function fetchWithTimeout(url, retries = 2) {
 }
 
 async function scanCompany(company, scanRunId) {
-  const website = company.website_url;
+  let website = company.website_url;
   if (!website) return;
+
+  // If URL doesn't have http:// or https://, add https://
+  if (!website.startsWith('http://') && !website.startsWith('https://')) {
+    website = 'https://' + website;
+  }
+
+  // Extra safety: check it's a valid URL
+  try {
+    new URL(website);
+  } catch {
+    console.log(`Skipping ${company.company_name}: invalid URL`);
+    return;
+  }
 
   // 1. Fetch homepage, discover links
   let $home, homepageLinks = [];
