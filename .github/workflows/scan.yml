@@ -21,3 +21,9 @@ jobs:
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+      - name: Generate Signals
+  run: node generate-signals.js
+  env:
+    SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+    SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}    
+          
