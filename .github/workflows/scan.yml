@@ -13,7 +13,7 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: '20'   # stable version, change to '24' only if necessary
+          node-version: '24'   # stable version, change to '24' only if necessary
 
       - run: npm install axios cheerio @supabase/supabase-js
 
