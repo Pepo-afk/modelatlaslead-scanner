@@ -176,8 +176,12 @@ async function scanCompany(company, scanRunId) {
       });
 
       await supabase.from('company_pages')
-        .update({ last_scan_at: new Date().toISOString(), last_status: status })
-        .eq('id', pageId);
+  .update({ 
+    last_scan_at: new Date().toISOString(), 
+    last_status: status,
+    signals_generated: false   // <-- add this line
+  })
+  .eq('id', pageId);
 
     } catch (err) {
       if (err.response && err.response.status === 404) {
