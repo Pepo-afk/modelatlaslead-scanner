@@ -180,9 +180,16 @@ async function generateSignals() {
     }
 
     const currentText = snapshots[0].cleaned_text || '';
-    const previousText = snapshots.length > 1 ? snapshots[1].cleaned_text : null;
+const previousText = snapshots.length > 1 ? snapshots[1].cleaned_text : null;
 
-    const pageSignals = getSignalsFromText(currentText, previousText);
+// Skip text signals entirely if this is the first time we see the page
+if (!previousText) {
+  console.log(`  First scan for ${page.page_url} – skipping text signals.`);
+  await supabase.from('company_pages').update({ signals_generated: true }).eq('id', page.id);
+  continue;
+}
+
+const pageSignals = getSignalsFromText(currentText, previousText);
     if (pageSignals.length === 0) {
       console.log(`No meaningful signals on ${page.page_url}`);
       await supabase.from('company_pages').update({ signals_generated: true }).eq('id', page.id);
