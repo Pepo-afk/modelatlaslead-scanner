@@ -1,16 +1,12 @@
 const { createClient } = require('@supabase/supabase-js');
-const ws = require('ws');
 
 const supabase = createClient(
   process.env.SUPABASE_URL,
   process.env.SUPABASE_SERVICE_KEY,
-  {
-    auth: { persistSession: false },
-    realtime: { transport: ws }
-  }
+  { auth: { persistSession: false } }
 );
 
-// ---------- IMPROVED SIGNAL DETECTION (same as before, unchanged) ----------
+// ---------- SIGNAL DETECTION (unchanged) ----------
 function getAddedText(oldText, newText) {
   if (!oldText) return newText || '';
   if (!newText) return '';
@@ -103,11 +99,35 @@ function getSignalsFromText(text, oldText = null) {
   return results;
 }
 
-// ---------- MAIN (GROUPED SIGNAL GENERATION) ----------
-async function generateSignals() {
-  console.log('Generating grouped signals from changed pages...');
+// ---------- CAP CHECK (20 days, with bypass) ----------
+async function hasRecentSignal(leadId) {
+  // Testing bypass – skip cap if DISABLE_CAP is set to "true"
+  if (process.env.DISABLE_CAP === 'true') {
+    console.log(`  CAP DISABLED – allowing signal for lead ${leadId}`);
+    return false;
+  }
 
-  // 1. Fetch the latest scan run ID (so we can tag signals)
+  const twentyDaysAgo = new Date();
+  twentyDaysAgo.setDate(twentyDaysAgo.getDate() - 20);
+
+  const { data, error } = await supabase
+    .from('signals')
+    .select('id')
+    .eq('lead_id', leadId)
+    .gte('detected_at', twentyDaysAgo.toISOString())
+    .limit(1);
+
+  if (error) {
+    console.error(`Error checking recent signals for lead ${leadId}:`, error.message);
+    return false; // fail safe
+  }
+  return data && data.length > 0;
+}
+
+// ---------- MAIN ----------
+async function generateSignals() {
+  console.log('Generating grouped signals (cap: 20 days)...');
+
   const { data: latestRun } = await supabase
     .from('scan_runs')
     .select('id')
@@ -121,7 +141,6 @@ async function generateSignals() {
     return;
   }
 
-  // 2. Fetch changed pages that haven't had signals generated yet
   const { data: changedPages, error } = await supabase
     .from('company_pages')
     .select(`
@@ -145,12 +164,9 @@ async function generateSignals() {
 
   console.log(`Processing ${changedPages.length} changed pages...`);
 
-  // Group detected signal types by company (and later by lead)
-  // Map: company_id -> Set of signal types
   const companySignals = new Map();
 
   for (const page of changedPages) {
-    // Get the two most recent snapshots for diff
     const { data: snapshots } = await supabase
       .from('page_snapshots')
       .select('cleaned_text, fetched_at')
@@ -159,7 +175,6 @@ async function generateSignals() {
       .limit(2);
 
     if (!snapshots || snapshots.length === 0) {
-      console.log(`No snapshot for ${page.page_url}, skipping.`);
       await supabase.from('company_pages').update({ signals_generated: true }).eq('id', page.id);
       continue;
     }
@@ -182,60 +197,55 @@ async function generateSignals() {
     }
     pageSignals.forEach(s => companySignals.get(companyId).add(s));
 
-    // Mark the page as processed
     await supabase.from('company_pages').update({ signals_generated: true }).eq('id', page.id);
   }
 
-  // 3. For each company, find its leads and create ONE signal per lead
   for (const [companyId, signalTypesSet] of companySignals.entries()) {
     const signalTypes = [...signalTypesSet];
     if (signalTypes.length === 0) continue;
 
-    // Get company details
     const { data: company } = await supabase
       .from('companies')
       .select('company_name, website_url')
       .eq('id', companyId)
       .single();
-
     if (!company) continue;
 
-    // Find all leads for this company
     const { data: leads } = await supabase
       .from('leads')
       .select('id, user_id')
       .eq('company_name', company.company_name)
       .eq('company_website', company.website_url);
-
-    if (!leads || leads.length === 0) {
-      console.log(`No leads for ${company.company_name}, skipping.`);
-      continue;
-    }
+    if (!leads || leads.length === 0) continue;
 
     const description = `Signals detected: ${signalTypes.join(', ')}`;
     const emailSubject = `Update: ${company.company_name}`;
 
     for (const lead of leads) {
-      // Check for duplicate (same lead, same description, today)
+      if (await hasRecentSignal(lead.id)) {
+        console.log(`  Skipping lead ${lead.id} – signal already sent within 20 days.`);
+        continue;
+      }
+
       const { data: existing } = await supabase
         .from('signals')
         .select('id')
         .eq('lead_id', lead.id)
         .eq('description', description)
-        .gte('detected_at', new Date().toISOString().split('T')[0])  // same date
+        .gte('detected_at', new Date().toISOString().split('T')[0])
         .maybeSingle();
 
       if (existing) {
-        console.log(`  Signal already exists for lead ${lead.id}, skipping.`);
+        console.log(`  Duplicate for lead ${lead.id} today, skipping.`);
         continue;
       }
 
       const { error: insertError } = await supabase.from('signals').insert({
         lead_id: lead.id,
         user_id: lead.user_id,
-        type: 'multi',                           // we use 'multi' when multiple types are grouped
-        description: description,
-        source_url: company.website_url,         // main website as reference
+        type: 'multi',
+        description,
+        source_url: company.website_url,
         email_status: 'pending',
         email_subject: emailSubject,
         scan_run_id: scanRunId
@@ -244,12 +254,12 @@ async function generateSignals() {
       if (insertError) {
         console.error(`  Error inserting signal for lead ${lead.id}: ${insertError.message}`);
       } else {
-        console.log(`  Created grouped signal for lead ${lead.id}: ${description}`);
+        console.log(`  Created signal for lead ${lead.id}: ${description}`);
       }
     }
   }
 
-  console.log('Grouped signal generation complete.');
+  console.log('Signal generation complete.');
 }
 
 generateSignals().catch(console.error);
