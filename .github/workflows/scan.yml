@@ -1,4 +1,4 @@
-name: Daily Company Scan
+name: Daily Monitor, Signals & Emails
 
 on:
   schedule:
@@ -6,24 +6,35 @@ on:
   workflow_dispatch:
 
 jobs:
-  scan:
+  monitor:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions/setup-node@v4
         with:
-          node-version: '24'   # stable version, change to '24' only if necessary
+          node-version: '24'
 
       - run: npm install axios cheerio @supabase/supabase-js
 
-      - run: node scanner.js
+      # 1. Scan company websites
+      - name: Run Web Scanner
+        run: node scanner.js
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
 
+      # 2. Generate signals from changes
       - name: Generate Signals
         run: node generate-signals.js
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+
+      # 3. Send emails for pending signals
+      - name: Send Emails
+        run: node send-emails.js
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
