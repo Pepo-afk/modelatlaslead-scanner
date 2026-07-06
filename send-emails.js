@@ -9,11 +9,17 @@ const supabase = createClient(
 const RESEND_API_KEY = process.env.RESEND_API_KEY;
 
 // ============================================================
-// CONFIGURE YOUR SENDING ADDRESS HERE
+// YOUR VERIFIED SENDING ADDRESS
 // ============================================================
-const FROM_ADDRESS = 'ModelAtlas <hello@modelatlas.net>';   // ← change this to your own verified domain
+const FROM_ADDRESS = 'ModelAtlas <hello@modelatlas.net>';
 
-async function sendEmailViaResend(to, subject, body) {
+// Helper to safely get the first name from a full name string
+function getFirstName(fullName) {
+  if (!fullName) return null;
+  return fullName.trim().split(' ')[0];
+}
+
+async function sendEmailViaResend(to, subject, htmlBody, textBody) {
   const response = await fetch('https://api.resend.com/emails', {
     method: 'POST',
     headers: {
@@ -24,7 +30,8 @@ async function sendEmailViaResend(to, subject, body) {
       from: FROM_ADDRESS,
       to: to,
       subject: subject,
-      html: body,
+      html: htmlBody,
+      text: textBody,   // plain text fallback, prevents spam labelling
     }),
   });
 
@@ -57,7 +64,6 @@ async function processPendingSignals() {
   console.log(`Found ${signals.length} pending signal(s).`);
 
   for (const signal of signals) {
-    // 1. Get user's profile (plan)
     const { data: profile, error: profileError } = await supabase
       .from('profiles')
       .select('plan')
@@ -69,10 +75,9 @@ async function processPendingSignals() {
       continue;
     }
 
-    // 2. Get the lead's email
     const { data: lead, error: leadError } = await supabase
       .from('leads')
-      .select('email, company_name')
+      .select('id, email, company_name, name')   // also fetch lead's name if available
       .eq('id', signal.lead_id)
       .single();
 
@@ -82,32 +87,44 @@ async function processPendingSignals() {
       continue;
     }
 
-    // 3. Free users – just mark as awaiting approval (they'll approve manually in the app)
+    // Free users – awaiting manual approval
     if (profile.plan === 'free') {
       console.log(`  Free plan – marking signal ${signal.id} as awaiting_approval.`);
       await supabase.from('signals').update({ email_status: 'awaiting_approval' }).eq('id', signal.id);
       continue;
     }
 
-    // 4. Paid users – send the email now
-    const subject = signal.email_subject || `Update about ${lead.company_name}`;
-    const body = `
-      <p>Hi,</p>
-      <p>I noticed some recent activity at <strong>${lead.company_name}</strong>:</p>
-      <p><em>${signal.description}</em></p>
-      <p>Source: <a href="${signal.source_url}">${signal.source_url}</a></p>
-      <p>Thought you might find this interesting.</p>
-      <p>– ModelAtlas</p>
+    // Prepare the email content
+    const firstName = getFirstName(lead.name) || 'there';
+    const company = lead.company_name || 'the company';
+    const signalDescription = signal.description.toLowerCase().replace('signals detected: ', '');
+    const sourceUrl = signal.source_url.startsWith('http') 
+      ? signal.source_url 
+      : 'https://' + signal.source_url;   // ensure full URL
+
+    const subject = `Quick update about ${company}`;
+
+    // HTML version – natural language, no obvious templating
+    const htmlBody = `
+      <p>Hi ${firstName},</p>
+      <p>I was just checking on <strong>${company}</strong> and noticed something interesting:</p>
+      <p><em>${signalDescription}</em></p>
+      <p>You can see it here: <a href="${sourceUrl}">${sourceUrl}</a></p>
+      <p>Might be worth a quick follow‑up. Let me know if you'd like me to dig deeper.</p>
+      <p>Cheers,<br>ModelAtlas</p>
     `;
 
+    // Plain text fallback (important for deliverability)
+    const textBody = `Hi ${firstName},\n\nI was just checking on ${company} and noticed something interesting:\n\n${signalDescription}\n\nSee it here: ${sourceUrl}\n\nMight be worth a quick follow‑up. Let me know if you'd like me to dig deeper.\n\nCheers,\nModelAtlas`;
+
     try {
-      await sendEmailViaResend(lead.email, subject, body);
+      await sendEmailViaResend(lead.email, subject, htmlBody, textBody);
       console.log(`  ✅ Email sent to ${lead.email} (signal ${signal.id})`);
 
       await supabase.from('signals').update({
         email_status: 'sent',
         sent_at: new Date().toISOString(),
-        email_body: body
+        email_body: htmlBody   // store the HTML version for the history
       }).eq('id', signal.id);
 
     } catch (err) {
@@ -119,4 +136,4 @@ async function processPendingSignals() {
   console.log('Email processing complete.');
 }
 
-processPendingSignals().catch(console.error);
+processPendingSignals().catch(console.error); 
