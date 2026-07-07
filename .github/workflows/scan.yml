@@ -24,14 +24,22 @@ jobs:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
 
-      # 2. Generate signals from changes
+      # 2. Generate signals from website changes
       - name: Generate Signals
         run: node generate-signals.js
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
 
-      # 3. Send emails for pending signals
+      # 3. Google News RSS backup signal source
+      - name: Google News RSS Scan
+        run: node google-news-scanner.js
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          DISABLE_CAP: ${{ secrets.DISABLE_CAP }}
+
+      # 4. Send emails for pending signals
       - name: Send Emails
         run: node send-emails.js
         env:
