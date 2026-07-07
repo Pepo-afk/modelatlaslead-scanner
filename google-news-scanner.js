@@ -73,7 +73,8 @@ function isArticleRecent(pubDate) {
 async function scanCompanyNews(company) {
   const name = company.company_name;
   const query = encodeURIComponent(`"${name}" (funding OR hiring OR launch OR partnership OR expansion OR rebranding OR leadership)`);
-  const rssUrl = `https://news.google.com/rss/search?q=${query}&hl=en&gl=US&ceid=US:en`;
+  // Added sort=date to get newest first
+  const rssUrl = `https://news.google.com/rss/search?q=${query}&hl=en&gl=US&ceid=US:en&sort=date`;
 
   let feed;
   try {
@@ -95,16 +96,15 @@ async function scanCompanyNews(company) {
     const link = item.link;
     if (!link) continue;
 
-    // Skip if already processed
-    if (await isArticleProcessed(link)) {
-      console.log(`    Already processed: ${link}`);
-      continue;
+    // Stop processing if we've hit an old article (since list is sorted newest first)
+    if (!isArticleRecent(item.pubDate)) {
+      console.log(`  Stopping – article too old: ${item.pubDate}`);
+      break;   // no need to check the rest, they're even older
     }
 
-    // Skip if article is older than 7 days
-    if (!isArticleRecent(item.pubDate)) {
-      console.log(`    Too old: ${item.pubDate} – skipping`);
-      await markArticleProcessed(company.id, link, item.title, item.pubDate); // still mark so we don't re-check
+    // Skip if already processed (very fast lookup)
+    if (await isArticleProcessed(link)) {
+      console.log(`    Already processed: ${link}`);
       continue;
     }
 
@@ -204,4 +204,4 @@ async function main() {
   console.log('\nGoogle News scan complete.');
 }
 
-main().catch(console.error);
+main().catch(console.error); 
