@@ -2,14 +2,18 @@ const { createClient } = require('@supabase/supabase-js');
 const Parser = require('rss-parser');
 const parser = new Parser();
 
+// REAL-TIME DISABLED – prevents process from hanging
 const supabase = createClient(
   process.env.SUPABASE_URL,
   process.env.SUPABASE_SERVICE_KEY,
-  { auth: { persistSession: false } }
+  {
+    auth: { persistSession: false },
+    realtime: { enabled: false }        // <--- ADD THIS LINE
+  }
 );
 
-const MAX_ARTICLE_AGE_DAYS = 7;   // only process articles this recent
-const MAX_ARTICLES_TO_CHECK = 50; // safety cap per company (avoids extremely long loops)
+const MAX_ARTICLE_AGE_DAYS = 7;
+const MAX_ARTICLES_TO_CHECK = 50;
 
 const KEYWORDS = {
   funding: ['raised', 'funding', 'series a', 'series b', 'series c', 'investment', 'backed by', 'million', 'billion', 'seed round'],
@@ -45,7 +49,6 @@ async function hasRecentSignal(leadId) {
   return data && data.length > 0;
 }
 
-// Fetch all already processed article URLs for this company (one query, fast)
 async function getProcessedUrls(companyId) {
   const { data } = await supabase
     .from('news_articles')
@@ -55,7 +58,7 @@ async function getProcessedUrls(companyId) {
 }
 
 function isArticleRecent(pubDate) {
-  if (!pubDate) return true;             // no date → assume recent
+  if (!pubDate) return true;
   const articleDate = new Date(pubDate);
   const cutoff = new Date();
   cutoff.setDate(cutoff.getDate() - MAX_ARTICLE_AGE_DAYS);
@@ -68,7 +71,7 @@ async function markArticleProcessed(companyId, articleUrl, title, pubDate) {
     article_url: articleUrl,
     title,
     pub_date: pubDate ? new Date(pubDate).toISOString() : null,
-  }).select('id').maybeSingle();   // silently ignore duplicates
+  }).select('id').maybeSingle();
 }
 
 async function scanCompanyNews(company) {
@@ -89,38 +92,31 @@ async function scanCompanyNews(company) {
     return new Set();
   }
 
-  // 1. Get all already‑processed URLs for this company in one go
   const processedUrls = await getProcessedUrls(company.id);
-  console.log(`  Found ${processedUrls.size} already processed articles, checking ${Math.min(feed.items.length, MAX_ARTICLES_TO_CHECK)} new items…`);
+  console.log(`  ${processedUrls.size} already processed, checking up to ${Math.min(feed.items.length, MAX_ARTICLES_TO_CHECK)}…`);
 
   const signalTypes = new Set();
   let checkedCount = 0;
 
   for (const item of feed.items) {
     if (checkedCount >= MAX_ARTICLES_TO_CHECK) break;
-
     const link = item.link;
     if (!link) continue;
     checkedCount++;
 
-    // 2. Skip if already processed (in‑memory lookup, no DB call)
     if (processedUrls.has(link)) continue;
-
-    // 3. Only consider recent articles
     if (!isArticleRecent(item.pubDate)) continue;
 
-    // 4. Detect signals
     const title = item.title || '';
     const snippet = item.contentSnippet || item.content || '';
     const text = `${title} ${snippet}`;
     const types = detectSignalTypes(text);
 
     if (types.length > 0) {
-      console.log(`    New article signals: ${types.join(', ')} → ${link}`);
+      console.log(`    Signals: ${types.join(', ')} → ${link}`);
       types.forEach(t => signalTypes.add(t));
     }
 
-    // 5. Mark as processed (to avoid re‑scanning in future)
     await markArticleProcessed(company.id, link, title, item.pubDate);
   }
 
@@ -183,7 +179,7 @@ async function processCompany(company) {
 }
 
 async function main() {
-  console.log('Starting Google News scan (optimised)...');
+  console.log('Starting Google News scan (optimised)…');
 
   const { data: companies, error } = await supabase
     .from('companies')
@@ -205,6 +201,10 @@ async function main() {
   }
 
   console.log('\nGoogle News scan complete.');
+  process.exit(0);   // <-- ensure clean exit
 }
 
-main().catch(console.error); 
+main().catch(err => {
+  console.error(err);
+  process.exit(1);
+}); 
