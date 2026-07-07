@@ -7,19 +7,41 @@ const supabase = createClient(
 );
 
 const RESEND_API_KEY = process.env.RESEND_API_KEY;
+const FROM_DOMAIN = 'hello@modelatlas.net';
+const DEFAULT_FROM_NAME = 'ModelAtlas';
 
-// ============================================================
-// YOUR VERIFIED SENDING ADDRESS
-// ============================================================
-const FROM_ADDRESS = 'ModelAtlas <hello@modelatlas.net>';
-
-// Helper to safely get the first name from a full name string
 function getFirstName(fullName) {
-  if (!fullName) return null;
+  if (!fullName) return 'there';
   return fullName.trim().split(' ')[0];
 }
 
-async function sendEmailViaResend(to, subject, htmlBody, textBody) {
+function formatSignalDetail(description) {
+  let detail = description.replace(/signals detected:\s*/i, '').trim();
+  const map = {
+    funding: 'raised new funding',
+    launch: 'launched a new product or feature',
+    hiring: 'started hiring aggressively',
+    expansion: 'expanded to a new location or market',
+    partnership: 'announced a new partnership',
+    rebranding: 'rebranded or refreshed their look',
+    leadership: 'made a leadership change',
+    multi: 'had some notable updates',
+  };
+  if (map[detail]) return map[detail];
+  if (detail.includes(',')) return 'had some notable updates';
+  return detail;
+}
+
+async function getProfile(userId) {
+  const { data: profile } = await supabase
+    .from('profiles')
+    .select('plan, sender_name')
+    .eq('id', userId)
+    .single();
+  return profile || { plan: 'free', sender_name: DEFAULT_FROM_NAME };
+}
+
+async function sendEmailViaResend(fromAddress, to, subject, htmlBody, textBody) {
   const response = await fetch('https://api.resend.com/emails', {
     method: 'POST',
     headers: {
@@ -27,11 +49,11 @@ async function sendEmailViaResend(to, subject, htmlBody, textBody) {
       'Content-Type': 'application/json',
     },
     body: JSON.stringify({
-      from: FROM_ADDRESS,
+      from: fromAddress,
       to: to,
       subject: subject,
       html: htmlBody,
-      text: textBody,   // plain text fallback, prevents spam labelling
+      text: textBody,
     }),
   });
 
@@ -39,7 +61,6 @@ async function sendEmailViaResend(to, subject, htmlBody, textBody) {
     const error = await response.text();
     throw new Error(`Resend API error: ${response.status} ${error}`);
   }
-
   return response.json();
 }
 
@@ -64,20 +85,14 @@ async function processPendingSignals() {
   console.log(`Found ${signals.length} pending signal(s).`);
 
   for (const signal of signals) {
-    const { data: profile, error: profileError } = await supabase
-      .from('profiles')
-      .select('plan')
-      .eq('id', signal.user_id)
-      .single();
-
-    if (profileError || !profile) {
-      console.log(`  Skipping signal ${signal.id}: no profile.`);
-      continue;
-    }
+    const profile = await getProfile(signal.user_id);
+    const plan = profile.plan;
+    const senderName = profile.sender_name || DEFAULT_FROM_NAME;
+    const fromAddress = `${senderName} <${FROM_DOMAIN}>`;
 
     const { data: lead, error: leadError } = await supabase
       .from('leads')
-      .select('id, email, company_name, name')   // also fetch lead's name if available
+      .select('id, email, company_name, name')
       .eq('id', signal.lead_id)
       .single();
 
@@ -87,44 +102,37 @@ async function processPendingSignals() {
       continue;
     }
 
-    // Free users – awaiting manual approval
-    if (profile.plan === 'free') {
-      console.log(`  Free plan – marking signal ${signal.id} as awaiting_approval.`);
-      await supabase.from('signals').update({ email_status: 'awaiting_approval' }).eq('id', signal.id);
-      continue;
-    }
-
-    // Prepare the email content
-    const firstName = getFirstName(lead.name) || 'there';
+    // For free users, we only send if they explicitly approved (i.e., status was changed to pending manually)
+    // But the daily script now sends everything that's pending. The front-end changes status
+    // from awaiting_approval to pending when user clicks "Approve". So it's safe.
+    const signalDetail = formatSignalDetail(signal.description);
+    const firstName = getFirstName(lead.name);
     const company = lead.company_name || 'the company';
-    const signalDescription = signal.description.toLowerCase().replace('signals detected: ', '');
-    const sourceUrl = signal.source_url.startsWith('http') 
-      ? signal.source_url 
-      : 'https://' + signal.source_url;   // ensure full URL
+    const subject = signal.email_subject || `Quick update about ${company}`;
 
-    const subject = `Quick update about ${company}`;
-
-    // HTML version – natural language, no obvious templating
-    const htmlBody = `
+    let htmlBody = `
       <p>Hi ${firstName},</p>
-      <p>I was just checking on <strong>${company}</strong> and noticed something interesting:</p>
-      <p><em>${signalDescription}</em></p>
-      <p>You can see it here: <a href="${sourceUrl}">${sourceUrl}</a></p>
-      <p>Might be worth a quick follow‑up. Let me know if you'd like me to dig deeper.</p>
-      <p>Cheers,<br>ModelAtlas</p>
+      <p>I saw that ${company} just ${signalDetail}. That seemed like a good reason to reach out again.</p>
+      <p>Are you still involved with them, or has anything changed on your end?</p>
+      <p>If now is a bad time, no worries at all — just let me know.</p>
+      <p>Best,<br>${senderName}</p>
     `;
 
-    // Plain text fallback (important for deliverability)
-    const textBody = `Hi ${firstName},\n\nI was just checking on ${company} and noticed something interesting:\n\n${signalDescription}\n\nSee it here: ${sourceUrl}\n\nMight be worth a quick follow‑up. Let me know if you'd like me to dig deeper.\n\nCheers,\nModelAtlas`;
+    // Free-tier signature
+    if (plan === 'free') {
+      htmlBody += `<p style="color:#888; font-size:12px; margin-top:20px;">Sent with ModelAtlas – reactivate dead leads automatically.</p>`;
+    }
+
+    const textBody = `Hi ${firstName},\n\nI saw that ${company} just ${signalDetail}. That seemed like a good reason to reach out again.\n\nAre you still involved with them, or has anything changed on your end?\n\nIf now is a bad time, no worries at all — just let me know.\n\nBest,\n${senderName}`;
 
     try {
-      await sendEmailViaResend(lead.email, subject, htmlBody, textBody);
-      console.log(`  ✅ Email sent to ${lead.email} (signal ${signal.id})`);
+      await sendEmailViaResend(fromAddress, lead.email, subject, htmlBody, textBody);
+      console.log(`  ✅ Email sent to ${lead.email} from "${senderName}" (signal ${signal.id})`);
 
       await supabase.from('signals').update({
         email_status: 'sent',
         sent_at: new Date().toISOString(),
-        email_body: htmlBody   // store the HTML version for the history
+        email_body: htmlBody
       }).eq('id', signal.id);
 
     } catch (err) {
