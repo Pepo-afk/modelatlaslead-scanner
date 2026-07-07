@@ -6,18 +6,125 @@ const supabase = createClient(
   { auth: { persistSession: false } }
 );
 
-// ---------- SIGNAL DETECTION (unchanged) ----------
-function getAddedText(oldText, newText) { /* same as before */ }
-function detectFunding(text) { /* ... */ }
-function detectHiringSurgeText(text) { /* not used for numeric; renamed to avoid confusion */ }
-function detectProductLaunch(text) { /* ... */ }
-function detectPartnership(text) { /* ... */ }
-function detectExpansion(text) { /* ... */ }
-function detectRebranding(text) { /* ... */ }
-function detectLeadershipChange(text) { /* ... */ }
-function getSignalsFromText(text, oldText = null) { /* ... */ }
+// ---------- TEXT EXTRACTION HELPERS ----------
+function getAddedText(oldText, newText) {
+  if (!oldText) return newText || '';
+  if (!newText) return '';
+  const oldLines = new Set(oldText.split(/\n/).map(l => l.trim().toLowerCase()).filter(Boolean));
+  const newLines = newText.split(/\n/).map(l => l.trim().toLowerCase()).filter(Boolean);
+  return newLines.filter(line => !oldLines.has(line)).join(' ');
+}
 
-// (I'll keep the full detection functions for brevity; they are identical to the previous version. We'll include the new hiring check in the main loop.)
+// ---------- SIGNAL DETECTION FUNCTIONS (unchanged) ----------
+function detectFunding(text) {
+  const lower = text.toLowerCase();
+  let score = 0;
+  const hasFundingWord = /\b(raised|funding|series [a-c]|investment|backed by|seed round)\b/i.test(lower);
+  const hasAmount = /\$\d+[mMkKbB]?|\d+\s?(million|billion)/i.test(lower);
+  if (hasFundingWord && hasAmount) score += 3;
+  if (/\bseries [a-c]\b/i.test(lower) && hasAmount) score += 3;
+  if (/\b(valuation|pre\-money|post\-money)\b/i.test(lower)) score += 2;
+  return score >= 4;
+}
+
+function detectHiringSurge(text) {
+  const lower = text.toLowerCase();
+  let score = 0;
+  if (/\b(we('re| are) hiring|now hiring|expanding (our |the )?team|join (our |the )?team|multiple openings|hiring spree)\b/i.test(lower)) score += 3;
+  if (/\b(new|additional) (position|role|opening)/i.test(lower)) score += 1;
+  if (/\b(growing (our |the )?(team|engineering|sales|marketing|support) (team|department|unit))\b/i.test(lower)) score += 2;
+  if (lower.includes('careers') && !/\b(hiring|join|apply|openings)\b/i.test(lower)) score -= 1;
+  return score >= 2;
+}
+
+function detectProductLaunch(text) {
+  const lower = text.toLowerCase();
+  let score = 0;
+  if (/\b(introducing|announcing|unveil|launch(es|ed|ing)?|now available|new (product|feature|platform|integration))\b/i.test(lower)) score += 2;
+  if (/\b(new (product|feature|platform|tool|app|dashboard|API))\b/i.test(lower)) score += 3;
+  if (/\b(released|shipped|deployed|rolled out)\b/i.test(lower)) score += 2;
+  if (/\blaunching soon\b/i.test(lower)) score -= 1;
+  return score >= 3;
+}
+
+function detectPartnership(text) {
+  const lower = text.toLowerCase();
+  let score = 0;
+  if (/\b(partner(ship|ing|s with)|integrat(es|ing|ed with)|collaborat(es|ing|ed with)|alliance with)\b/i.test(lower)) score += 2;
+  if (/\b(together with|teaming up)\b/i.test(lower)) score += 1;
+  return score >= 2;
+}
+
+function detectExpansion(text) {
+  const lower = text.toLowerCase();
+  let score = 0;
+  if (/\b(new (office|location|city|country|region)|expanding (to|into)|now in [A-Z]|global expansion|opening (a|an) office)\b/i.test(lower)) score += 2;
+  if (/\b(expanded|opening|launching) (in|across|into) [A-Z][a-z]+\b/i.test(lower)) score += 1;
+  return score >= 2;
+}
+
+function detectRebranding(text) {
+  const lower = text.toLowerCase();
+  let score = 0;
+  if (/\b(rebr?and|new (look|name|logo|identity)|refresh(ed)? (brand|logo|website))\b/i.test(lower)) score += 2;
+  if (/\b(we are (now )?called|formerly known as|introducing our new (name|logo))\b/i.test(lower)) score += 3;
+  return score >= 2;
+}
+
+function detectLeadershipChange(text) {
+  const lower = text.toLowerCase();
+  let score = 0;
+  if (/\b(new (ceo|cto|cfo|coo|vp|director|head of)|appointed (ceo|cto|cfo)|hired as (ceo|cto|cfo))\b/i.test(lower)) score += 3;
+  if (/\b(joined as|takes over as|promoted to)\b/i.test(lower)) score += 2;
+  return score >= 3;
+}
+
+function getSignalsFromText(text, oldText = null) {
+  const analysisText = oldText ? getAddedText(oldText, text) : text;
+  if (!analysisText || analysisText.length < 30) return [];
+
+  const detectors = {
+    funding: detectFunding,
+    hiring: detectHiringSurge,
+    launch: detectProductLaunch,
+    partnership: detectPartnership,
+    expansion: detectExpansion,
+    rebranding: detectRebranding,
+    leadership: detectLeadershipChange,
+  };
+
+  const results = [];
+  for (const [type, fn] of Object.entries(detectors)) {
+    if (fn(analysisText)) results.push(type);
+  }
+  return results;
+}
+
+// ---------- SNIPPET EXTRACTOR ----------
+function extractSnippet(text, signalTypes) {
+  if (!text || signalTypes.length === 0) return '';
+  // Break into sentences
+  const sentences = text.split(/[.!?]+/).map(s => s.trim()).filter(Boolean);
+  const keywordMap = {
+    funding: ['raised', 'funding', 'series a', 'series b', 'series c', 'investment', 'million', 'billion'],
+    hiring: ['hiring', 'join us', 'we\'re growing', 'now hiring', 'open positions', 'team'],
+    launch: ['launch', 'introducing', 'new product', 'now available', 'released', 'announcing'],
+    partnership: ['partnership', 'partner with', 'integrate', 'collaboration', 'alliance'],
+    expansion: ['new office', 'expanding to', 'now in', 'new location', 'global expansion'],
+    rebranding: ['rebrand', 'new look', 'new name', 'new logo', 'refresh'],
+    leadership: ['new ceo', 'new cto', 'new cfo', 'appointed', 'hired as', 'takes over as']
+  };
+
+  const relevant = sentences.filter(s => {
+    const lower = s.toLowerCase();
+    return signalTypes.some(type =>
+      (keywordMap[type] || []).some(word => lower.includes(word))
+    );
+  });
+
+  // Return up to 2 sentences
+  return relevant.slice(0, 2).join('. ') || text.substring(0, 250);
+}
 
 // ---------- MONTHLY CAP CHECK ----------
 async function hasRecentSignal(leadId) {
@@ -35,7 +142,6 @@ async function hasRecentSignal(leadId) {
 
 // ---------- HIRING SURGE CHECK ----------
 async function checkHiringSurge(pageId) {
-  // Get the two most recent snapshots for this careers page
   const { data: snapshots } = await supabase
     .from('page_snapshots')
     .select('job_count, fetched_at')
@@ -51,7 +157,7 @@ async function checkHiringSurge(pageId) {
 
 // ---------- MAIN GROUPED SIGNAL GENERATION ----------
 async function generateSignals() {
-  console.log('Generating grouped signals (with hiring surge)...');
+  console.log('Generating detailed signals (with snippets)...');
 
   const { data: latestRun } = await supabase
     .from('scan_runs')
@@ -88,7 +194,8 @@ async function generateSignals() {
 
   console.log(`Processing ${changedPages.length} changed pages...`);
 
-  const companySignals = new Map(); // company_id -> Set of signal types
+  // Map: company_id -> { signalTypes: Set, details: [] }
+  const companySignalsMap = new Map();
 
   for (const page of changedPages) {
     const { data: snapshots } = await supabase
@@ -107,20 +214,24 @@ async function generateSignals() {
     const previousText = snapshots.length > 1 ? snapshots[1].cleaned_text : null;
     let pageSignals = [];
 
-    // Text-based signals (only if previous text exists)
+    // Text signals (only if previous text exists)
     if (previousText) {
       pageSignals = getSignalsFromText(currentText, previousText);
     }
 
-    // Hiring surge check (careers pages)
+    // Hiring surge check
     if (page.page_type === 'careers') {
       if (await checkHiringSurge(page.id)) {
         console.log(`  Hiring surge detected on ${page.page_url}`);
         pageSignals.push('hiring');
+        // Add hiring detail
+        const jobsNow = snapshots[0].job_count || 0;
+        const jobsBefore = snapshots.length > 1 ? snapshots[1].job_count || 0 : 0;
+        const hiringDetail = `Job openings increased from ${jobsBefore} to ${jobsNow}.`;
+        // We'll store this separately; we don't overwrite the snippet yet
+        page._hiringDetail = hiringDetail;
       }
     }
-
-    // (Future: blog post detection can be added similarly)
 
     if (pageSignals.length === 0) {
       console.log(`No meaningful signals on ${page.page_url}`);
@@ -130,18 +241,29 @@ async function generateSignals() {
 
     console.log(`✅ Signals on ${page.page_url}: ${pageSignals.join(', ')}`);
 
+    // Build snippet from the current text based on detected types
+    const snippet = extractSnippet(currentText, pageSignals);
+    // For hiring surge, prepend the hiring detail
+    const finalDetail = page._hiringDetail
+      ? page._hiringDetail + ' ' + snippet
+      : snippet;
+
     const companyId = page.company_id;
-    if (!companySignals.has(companyId)) {
-      companySignals.set(companyId, new Set());
+    if (!companySignalsMap.has(companyId)) {
+      companySignalsMap.set(companyId, { signalTypes: new Set(), details: [] });
     }
-    pageSignals.forEach(s => companySignals.get(companyId).add(s));
+    const entry = companySignalsMap.get(companyId);
+    pageSignals.forEach(s => entry.signalTypes.add(s));
+    if (finalDetail) {
+      entry.details.push(finalDetail);
+    }
 
     await supabase.from('company_pages').update({ signals_generated: true }).eq('id', page.id);
   }
 
-  // Group and insert signals (with cap)
-  for (const [companyId, signalTypesSet] of companySignals.entries()) {
-    const signalTypes = [...signalTypesSet];
+  // Now create one grouped signal per company/lead
+  for (const [companyId, data] of companySignalsMap.entries()) {
+    const signalTypes = [...data.signalTypes];
     if (signalTypes.length === 0) continue;
 
     const { data: company } = await supabase
@@ -158,12 +280,15 @@ async function generateSignals() {
       .eq('company_website', company.website_url);
     if (!leads || leads.length === 0) continue;
 
+    // Build a combined description and signal_detail
     const description = `Signals detected: ${signalTypes.join(', ')}`;
+    const signalDetail = data.details.join(' | ') || description; // fallback to description if no snippets
+
     const emailSubject = `Update: ${company.company_name}`;
 
     for (const lead of leads) {
       if (await hasRecentSignal(lead.id)) {
-        console.log(`  Skipping lead ${lead.id} – signal already sent within 20 days.`);
+        console.log(`  Skipping lead ${lead.id} – cap (20 days).`);
         continue;
       }
 
@@ -185,6 +310,7 @@ async function generateSignals() {
         user_id: lead.user_id,
         type: 'multi',
         description,
+        signal_detail: signalDetail,      // <-- the rich snippet
         source_url: company.website_url,
         email_status: 'pending',
         email_subject: emailSubject,
@@ -202,4 +328,4 @@ async function generateSignals() {
   console.log('Signal generation complete.');
 }
 
-generateSignals().catch(console.error); 
+generateSignals().catch(console.error);
