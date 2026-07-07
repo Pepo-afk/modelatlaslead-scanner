@@ -50,7 +50,7 @@ async function getProfile(userId) {
 async function generateAIEmail(firstName, company, signalDetail, userContext, senderName) {
   try {
     const response = await fetch(
-      'https://<YOUR_SUPABASE_PROJECT_REF>.functions.supabase.co/generate-ai-email',
+      'https://<tafiwgtkgedndgqtgcil>.functions.supabase.co/generate-ai-email',
       {
         method: 'POST',
         headers: {
