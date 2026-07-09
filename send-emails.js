@@ -21,7 +21,7 @@ function getFirstName(fullName) {
 async function getProfile(userId) {
   const { data: profile } = await supabase
     .from('profiles')
-    .select('plan, sender_name, ai_enabled, email, notify_signals')
+    .select('plan, sender_name, ai_enabled, email, notify_signals, auto_pilot')
     .eq('id', userId)
     .single();
   return profile || {
@@ -29,7 +29,8 @@ async function getProfile(userId) {
     sender_name: DEFAULT_FROM_NAME,
     ai_enabled: false,
     email: null,
-    notify_signals: true
+    notify_signals: true,
+    auto_pilot: false
   };
 }
 
@@ -143,12 +144,14 @@ async function processPendingSignals() {
       continue;
     }
 
-    // ---------- FREE USERS ----------
-    if (plan === 'free') {
-      console.log(`  Free plan – marking signal ${signal.id} as awaiting_approval.`);
+    // Should this signal be held for manual approval?
+    const manualApproval = (plan === 'free') || (profile.auto_pilot === false);
+
+    if (manualApproval) {
+      console.log(`  Manual approval – marking signal ${signal.id} as awaiting_approval.`);
       await supabase.from('signals').update({ email_status: 'awaiting_approval' }).eq('id', signal.id);
 
-      // Send notification to the user if they enabled it and we have their email
+      // Send notification to the user if we have their email and they haven't disabled notifications
       if (profile.email && profile.notify_signals !== false) {
         const signalDesc = signal.signal_detail || signal.description;
         await sendUserNotification(profile.email, lead.company_name || 'a company', signalDesc);
@@ -158,7 +161,7 @@ async function processPendingSignals() {
       continue;
     }
 
-    // ---------- PAID USERS ----------
+    // ---------- AUTO‑PILOT (paid users with auto_pilot on) ----------
     const firstName = getFirstName(lead.name);
     const company = lead.company_name || 'the company';
     const subject = signal.email_subject || `Quick update about ${company}`;
@@ -187,6 +190,7 @@ async function processPendingSignals() {
       textBody = `Hi ${firstName},\n\nI saw that ${company} just ${signalDetail}. That seemed like a good reason to reach out again.\n\nAre you still involved with them, or has anything changed on your end?\n\nIf now is a bad time, no worries at all — just let me know.\n\nBest,\n${senderName}`;
     }
 
+    // Free‑tier signature only if plan is free
     if (plan === 'free') {
       htmlBody += `<p style="color:#888; font-size:12px; margin-top:20px;">Sent with ModelAtlas – reactivate dead leads automatically.</p>`;
     }
@@ -214,4 +218,4 @@ async function processPendingSignals() {
 processPendingSignals().catch(err => {
   console.error(err);
   process.exit(1);
-}); 
+});
