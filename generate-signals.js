@@ -63,12 +63,12 @@ async function getFeedbackRatio(type) {
 
 async function adjustScore(type, originalThreshold) {
   const ratio = await getFeedbackRatio(type);
-  if (ratio < 0.4) return originalThreshold * 10;   // almost impossible to trigger
-  if (ratio < 0.6) return originalThreshold * 2;    // much harder
+  if (ratio < 0.4) return originalThreshold * 10;
+  if (ratio < 0.6) return originalThreshold * 2;
   return originalThreshold;
 }
 
-// ---------- SIGNAL DETECTION (with learning, returns { triggered, score, threshold }) ----------
+// ---------- SIGNAL DETECTION (returns { triggered, score, threshold }) ----------
 async function detectFunding(text) {
   const lower = text.toLowerCase();
   let score = 0;
@@ -241,78 +241,172 @@ async function generateSignals() {
   const companySignalsMap = new Map(); // company_id -> { signalTypes: Set, details: [] }
 
   for (const page of changedPages) {
-    // ----- PAGE TYPE FILTER: only scan pages that announce news -----
+    // ----- 1. Hiring surge check (works for any page that is careers, regardless of text) -----
+    let hiringSurgeDetected = false;
+    let hiringDetail = '';
+    if (page.page_type === 'careers') {
+      const { data: snapshots } = await supabase
+        .from('page_snapshots')
+        .select('cleaned_text, job_count, fetched_at')
+        .eq('company_page_id', page.id)
+        .order('fetched_at', { ascending: false })
+        .limit(2);
+
+      if (snapshots && snapshots.length >= 2) {
+        if (await checkHiringSurge(page.id)) {
+          console.log(`  Hiring surge detected on ${page.page_url}`);
+          hiringSurgeDetected = true;
+          const jobsNow = snapshots[0].job_count || 0;
+          const jobsBefore = snapshots[1].job_count || 0;
+          hiringDetail = `Job openings increased from ${jobsBefore} to ${jobsNow}.`;
+        }
+      } else if (snapshots && snapshots.length === 1) {
+        // First scan, can't compare, skip hiring surge
+      }
+      // We can also skip text signals for careers pages entirely, so we'll mark page as processed if only hiring surge was found.
+    }
+
+    // ----- 2. Text‑based signals (only for allowed page types) -----
     const allowedPageTypes = ['blog', 'news', 'press', 'homepage'];
-    if (!allowedPageTypes.includes(page.page_type)) {
-      console.log(`  Skipping text signals – page type is ${page.page_type}`);
-      await supabase.from('company_pages').update({ signals_generated: true }).eq('id', page.id);
-      continue;
-    }
+    let textSignalTypes = [];
+    let confidence = 'none';
+    if (allowedPageTypes.includes(page.page_type)) {
+      const { data: snapshots } = await supabase
+        .from('page_snapshots')
+        .select('cleaned_text, job_count, fetched_at')
+        .eq('company_page_id', page.id)
+        .order('fetched_at', { ascending: false })
+        .limit(2);
 
-    const { data: snapshots } = await supabase
-      .from('page_snapshots')
-      .select('cleaned_text, job_count, fetched_at')
-      .eq('company_page_id', page.id)
-      .order('fetched_at', { ascending: false })
-      .limit(2);
-
-    if (!snapshots || snapshots.length === 0) {
-      await supabase.from('company_pages').update({ signals_generated: true }).eq('id', page.id);
-      continue;
-    }
-
-    const currentText = snapshots[0].cleaned_text || '';
-    const previousText = snapshots.length > 1 ? snapshots[1].cleaned_text : null;
-    let signalTypes = [];
-    let confidence = 'medium'; // default if no text signals
-
-    // Text‑based signals (only if previous text exists)
-    if (previousText) {
-      const textResults = await getSignalsFromText(currentText, previousText);
-      if (textResults.length > 0) {
-        const totalRatio = textResults.reduce((sum, s) => sum + (s.score / s.threshold), 0);
-        const avgRatio = totalRatio / textResults.length;
-        if (avgRatio >= 1.5) confidence = 'high';
-        else if (avgRatio >= 1.0) confidence = 'medium';
-        else confidence = 'low';
-        console.log(`  Text confidence: ${confidence} (avg ${avgRatio.toFixed(2)})`);
-        if (confidence !== 'low') {
-          signalTypes.push(...textResults.map(s => s.type));
+      if (snapshots && snapshots.length >= 2) {
+        const currentText = snapshots[0].cleaned_text || '';
+        const previousText = snapshots[1].cleaned_text || null;
+        if (previousText) {
+          const textResults = await getSignalsFromText(currentText, previousText);
+          if (textResults.length > 0) {
+            const totalRatio = textResults.reduce((sum, s) => sum + (s.score / s.threshold), 0);
+            const avgRatio = totalRatio / textResults.length;
+            if (avgRatio >= 1.5) confidence = 'high';
+            else if (avgRatio >= 1.0) confidence = 'medium';
+            else confidence = 'low';
+            console.log(`  Text confidence: ${confidence} (avg ${avgRatio.toFixed(2)})`);
+            if (confidence !== 'low') {
+              textSignalTypes = textResults.map(s => s.type);
+            }
+          }
         }
       }
     }
 
-    // ----- Homepage double‑signal rule -----
-    if (page.page_type === 'homepage' && signalTypes.length < 2) {
+    // ----- 3. Combine signals (hiring + text) -----
+    const allSignalTypes = [];
+    if (hiringSurgeDetected) allSignalTypes.push('hiring');
+    allSignalTypes.push(...textSignalTypes);
+
+    // ----- 4. Homepage double‑signal rule -----
+    if (page.page_type === 'homepage' && allSignalTypes.length < 2) {
       console.log('  Homepage signal too weak – only one type detected, ignoring.');
       await supabase.from('company_pages').update({ signals_generated: true }).eq('id', page.id);
       continue;
     }
 
-    // Hiring surge (numeric, always strong)
-    if (page.page_type === 'careers') {
-      // Even if careers is not in allowedPageTypes for text, we still check hiring surge
-      // but we must allow careers page type for this check. So we'll handle hiring surge separately.
-      // Actually we need to check hiring surge for any page_type that is 'careers', regardless of text filter.
-      // Let's reorder: we already filtered for allowedPageTypes above, but careers might not be in that list.
-      // So we should check hiring surge BEFORE the page type filter, or move the filter later.
-      // Better: remove the page_type filter for careers; but we don't want text signals from careers.
-      // Solution: do hiring surge check earlier, and then apply text filter only for text signals.
-      // We'll restructure the loop slightly to handle this.
+    // ----- 5. If no signals, skip -----
+    if (allSignalTypes.length === 0) {
+      console.log(`No meaningful signals on ${page.page_url}`);
+      await supabase.from('company_pages').update({ signals_generated: true }).eq('id', page.id);
+      continue;
     }
 
-    // Let's adjust: we need to check hiring surge for any page that is careers, even if we skip text.
-    // So we'll move the hiring surge check before the page type filter.
-    // I'll modify the loop below to fix this. I'll provide a corrected version now.
+    console.log(`✅ Signals on ${page.page_url}: ${allSignalTypes.join(', ')} (confidence: ${confidence})`);
+
+    // ----- 6. Build snippet -----
+    // Need current text for snippet (use the same snapshots we fetched if available; we'll fetch again for simplicity)
+    const { data: snapshotsForSnippet } = await supabase
+      .from('page_snapshots')
+      .select('cleaned_text')
+      .eq('company_page_id', page.id)
+      .order('fetched_at', { ascending: false })
+      .limit(1)
+      .single();
+    const currentText = snapshotsForSnippet?.cleaned_text || '';
+    const snippet = extractSnippet(currentText, allSignalTypes);
+    const finalDetail = hiringDetail ? hiringDetail + ' ' + snippet : snippet;
+
+    const companyId = page.company_id;
+    if (!companySignalsMap.has(companyId)) {
+      companySignalsMap.set(companyId, { signalTypes: new Set(), details: [] });
+    }
+    const entry = companySignalsMap.get(companyId);
+    allSignalTypes.forEach(s => entry.signalTypes.add(s));
+    if (finalDetail) entry.details.push(finalDetail);
+
+    await supabase.from('company_pages').update({ signals_generated: true }).eq('id', page.id);
   }
 
-  // The above loop is incomplete because I need to restructure to allow careers hiring surge.
-  // I'll output a corrected, complete version of the loop below.
+  // Create one grouped signal per company/lead
+  for (const [companyId, data] of companySignalsMap.entries()) {
+    const signalTypes = [...data.signalTypes];
+    if (signalTypes.length === 0) continue;
+
+    const { data: company } = await supabase
+      .from('companies')
+      .select('company_name, website_url')
+      .eq('id', companyId)
+      .single();
+    if (!company) continue;
+
+    const { data: leads } = await supabase
+      .from('leads')
+      .select('id, user_id')
+      .eq('company_name', company.company_name)
+      .eq('company_website', company.website_url);
+    if (!leads || leads.length === 0) continue;
+
+    const description = `Signals detected: ${signalTypes.join(', ')}`;
+    const signalDetail = data.details.join(' | ') || description;
+
+    const emailSubject = `Update: ${company.company_name}`;
+
+    for (const lead of leads) {
+      if (await hasRecentSignal(lead.id)) {
+        console.log(`  Skipping lead ${lead.id} – cap (20 days).`);
+        continue;
+      }
+
+      const { data: existing } = await supabase
+        .from('signals')
+        .select('id')
+        .eq('lead_id', lead.id)
+        .eq('description', description)
+        .gte('detected_at', new Date().toISOString().split('T')[0])
+        .maybeSingle();
+
+      if (existing) {
+        console.log(`  Duplicate for lead ${lead.id} today, skipping.`);
+        continue;
+      }
+
+      const { error: insertError } = await supabase.from('signals').insert({
+        lead_id: lead.id,
+        user_id: lead.user_id,
+        type: 'multi',
+        description,
+        signal_detail: signalDetail,
+        source_url: company.website_url,
+        email_status: 'pending',
+        email_subject: emailSubject,
+        scan_run_id: scanRunId
+      });
+
+      if (insertError) {
+        console.error(`  Error inserting signal: ${insertError.message}`);
+      } else {
+        console.log(`  Created signal for lead ${lead.id}: ${description}`);
+      }
+    }
+  }
+
+  console.log('Signal generation complete.');
 }
 
-// Because the restructuring is complex, I'll provide the full, final corrected loop
-// that properly handles page type filtering, confidence, homepage rule, and hiring surge.
-// I'll replace the entire `for (const page of changedPages)` block with the corrected one.
-
-// I'll give the user the full file with that corrected loop.
-// I'll output the complete final code now.
+generateSignals().catch(console.error);
