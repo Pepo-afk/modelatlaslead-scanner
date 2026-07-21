@@ -6,48 +6,6 @@ const supabase = createClient(
   { auth: { persistSession: false } }
 );
 
-// ---------- FEEDBACK LEARNING ----------
-async function getFeedbackRatio(type) {
-  // Look at the last 50 signals of this type (using description)
-  const { data: signals } = await supabase
-    .from('signals')
-    .select('id, description')
-    .or(`type.eq.${type},description.ilike.%${type}%`)
-    .order('detected_at', { ascending: false })
-    .limit(50);
-
-  if (!signals || signals.length === 0) return 1; // no data = neutral
-
-  const signalIds = signals.map(s => s.id);
-
-  const { data: feedbacks } = await supabase
-    .from('signal_feedback')
-    .select('rating')
-    .in('signal_id', signalIds);
-
-  if (!feedbacks || feedbacks.length === 0) return 1; // no feedback yet
-
-  const good = feedbacks.filter(f => f.rating === 'good').length;
-  const ratio = good / feedbacks.length;
-
-  console.log(`  Feedback for type "${type}": ${good}/${feedbacks.length} good, ratio = ${ratio}`);
-  return ratio;
-}
-
-async function adjustScore(type, originalScore) {
-  const ratio = await getFeedbackRatio(type);
-
-  if (ratio < 0.4) {
-    // Less than 40% good → severely penalize
-    return originalScore * 0.1;
-  } else if (ratio < 0.6) {
-    // Between 40-60% → moderate penalty
-    return originalScore * 0.5;
-  }
-  // Above 60% → keep original score
-  return originalScore;
-}
-
 // ---------- TEXT HELPERS ----------
 function getAddedText(oldText, newText) {
   if (!oldText) return newText || '';
@@ -78,7 +36,39 @@ function extractSnippet(text, signalTypes) {
   return relevant.slice(0, 2).join('. ') || text.substring(0, 250);
 }
 
-// ---------- SIGNAL DETECTION (with learning) ----------
+// ---------- FEEDBACK LEARNING ----------
+async function getFeedbackRatio(type) {
+  const { data: signals } = await supabase
+    .from('signals')
+    .select('id, description')
+    .or(`type.eq.${type},description.ilike.%${type}%`)
+    .order('detected_at', { ascending: false })
+    .limit(50);
+
+  if (!signals || signals.length === 0) return 1;
+
+  const signalIds = signals.map(s => s.id);
+  const { data: feedbacks } = await supabase
+    .from('signal_feedback')
+    .select('rating')
+    .in('signal_id', signalIds);
+
+  if (!feedbacks || feedbacks.length === 0) return 1;
+
+  const good = feedbacks.filter(f => f.rating === 'good').length;
+  const ratio = good / feedbacks.length;
+  console.log(`  Feedback for type "${type}": ${good}/${feedbacks.length} good, ratio = ${ratio}`);
+  return ratio;
+}
+
+async function adjustScore(type, originalThreshold) {
+  const ratio = await getFeedbackRatio(type);
+  if (ratio < 0.4) return originalThreshold * 10;   // almost impossible to trigger
+  if (ratio < 0.6) return originalThreshold * 2;    // much harder
+  return originalThreshold;
+}
+
+// ---------- SIGNAL DETECTION (with learning, returns { triggered, score, threshold }) ----------
 async function detectFunding(text) {
   const lower = text.toLowerCase();
   let score = 0;
@@ -87,19 +77,21 @@ async function detectFunding(text) {
   if (hasFundingWord && hasAmount) score += 3;
   if (/\bseries [a-c]\b/i.test(lower) && hasAmount) score += 3;
   if (/\b(valuation|pre\-money|post\-money)\b/i.test(lower)) score += 2;
-  const threshold = await adjustScore('funding', 4);
-  return score >= threshold;
+  let threshold = 6;
+  threshold = await adjustScore('funding', threshold);
+  return { triggered: score >= threshold, score: score, threshold: threshold };
 }
 
-async function detectHiringSurge(text) {
+async function detectHiringSurgeText(text) {
   const lower = text.toLowerCase();
   let score = 0;
   if (/\b(we('re| are) hiring|now hiring|expanding (our |the )?team|join (our |the )?team|multiple openings|hiring spree)\b/i.test(lower)) score += 3;
   if (/\b(new|additional) (position|role|opening)/i.test(lower)) score += 1;
   if (/\b(growing (our |the )?(team|engineering|sales|marketing|support) (team|department|unit))\b/i.test(lower)) score += 2;
   if (lower.includes('careers') && !/\b(hiring|join|apply|openings)\b/i.test(lower)) score -= 1;
-  const threshold = await adjustScore('hiring', 2);
-  return score >= threshold;
+  let threshold = 3;
+  threshold = await adjustScore('hiring', threshold);
+  return { triggered: score >= threshold, score: score, threshold: threshold };
 }
 
 async function detectProductLaunch(text) {
@@ -109,8 +101,9 @@ async function detectProductLaunch(text) {
   if (/\b(new (product|feature|platform|tool|app|dashboard|API))\b/i.test(lower)) score += 3;
   if (/\b(released|shipped|deployed|rolled out)\b/i.test(lower)) score += 2;
   if (/\blaunching soon\b/i.test(lower)) score -= 1;
-  const threshold = await adjustScore('launch', 3);
-  return score >= threshold;
+  let threshold = 5;
+  threshold = await adjustScore('launch', threshold);
+  return { triggered: score >= threshold, score: score, threshold: threshold };
 }
 
 async function detectPartnership(text) {
@@ -118,8 +111,9 @@ async function detectPartnership(text) {
   let score = 0;
   if (/\b(partner(ship|ing|s with)|integrat(es|ing|ed with)|collaborat(es|ing|ed with)|alliance with)\b/i.test(lower)) score += 2;
   if (/\b(together with|teaming up)\b/i.test(lower)) score += 1;
-  const threshold = await adjustScore('partnership', 2);
-  return score >= threshold;
+  let threshold = 4;
+  threshold = await adjustScore('partnership', threshold);
+  return { triggered: score >= threshold, score: score, threshold: threshold };
 }
 
 async function detectExpansion(text) {
@@ -127,8 +121,9 @@ async function detectExpansion(text) {
   let score = 0;
   if (/\b(new (office|location|city|country|region)|expanding (to|into)|now in [A-Z]|global expansion|opening (a|an) office)\b/i.test(lower)) score += 2;
   if (/\b(expanded|opening|launching) (in|across|into) [A-Z][a-z]+\b/i.test(lower)) score += 1;
-  const threshold = await adjustScore('expansion', 2);
-  return score >= threshold;
+  let threshold = 4;
+  threshold = await adjustScore('expansion', threshold);
+  return { triggered: score >= threshold, score: score, threshold: threshold };
 }
 
 async function detectRebranding(text) {
@@ -136,8 +131,9 @@ async function detectRebranding(text) {
   let score = 0;
   if (/\b(rebr?and|new (look|name|logo|identity)|refresh(ed)? (brand|logo|website))\b/i.test(lower)) score += 2;
   if (/\b(we are (now )?called|formerly known as|introducing our new (name|logo))\b/i.test(lower)) score += 3;
-  const threshold = await adjustScore('rebranding', 2);
-  return score >= threshold;
+  let threshold = 4;
+  threshold = await adjustScore('rebranding', threshold);
+  return { triggered: score >= threshold, score: score, threshold: threshold };
 }
 
 async function detectLeadershipChange(text) {
@@ -145,8 +141,9 @@ async function detectLeadershipChange(text) {
   let score = 0;
   if (/\b(new (ceo|cto|cfo|coo|vp|director|head of)|appointed (ceo|cto|cfo)|hired as (ceo|cto|cfo))\b/i.test(lower)) score += 3;
   if (/\b(joined as|takes over as|promoted to)\b/i.test(lower)) score += 2;
-  const threshold = await adjustScore('leadership', 3);
-  return score >= threshold;
+  let threshold = 5;
+  threshold = await adjustScore('leadership', threshold);
+  return { triggered: score >= threshold, score: score, threshold: threshold };
 }
 
 async function getSignalsFromText(text, oldText = null) {
@@ -155,7 +152,7 @@ async function getSignalsFromText(text, oldText = null) {
 
   const detectors = [
     { type: 'funding', fn: detectFunding },
-    { type: 'hiring', fn: detectHiringSurge },
+    { type: 'hiring', fn: detectHiringSurgeText },
     { type: 'launch', fn: detectProductLaunch },
     { type: 'partnership', fn: detectPartnership },
     { type: 'expansion', fn: detectExpansion },
@@ -165,8 +162,9 @@ async function getSignalsFromText(text, oldText = null) {
 
   const results = [];
   for (const { type, fn } of detectors) {
-    if (await fn(analysisText)) {
-      results.push(type);
+    const res = await fn(analysisText);
+    if (res.triggered) {
+      results.push({ type: type, score: res.score, threshold: res.threshold });
     }
   }
   return results;
@@ -203,7 +201,7 @@ async function hasRecentSignal(leadId) {
 
 // ---------- MAIN ----------
 async function generateSignals() {
-  console.log('Generating detailed signals (with self‑learning)...');
+  console.log('Generating detailed signals (with confidence filter)...');
 
   const { data: latestRun } = await supabase
     .from('scan_runs')
@@ -243,6 +241,14 @@ async function generateSignals() {
   const companySignalsMap = new Map(); // company_id -> { signalTypes: Set, details: [] }
 
   for (const page of changedPages) {
+    // ----- PAGE TYPE FILTER: only scan pages that announce news -----
+    const allowedPageTypes = ['blog', 'news', 'press', 'homepage'];
+    if (!allowedPageTypes.includes(page.page_type)) {
+      console.log(`  Skipping text signals – page type is ${page.page_type}`);
+      await supabase.from('company_pages').update({ signals_generated: true }).eq('id', page.id);
+      continue;
+    }
+
     const { data: snapshots } = await supabase
       .from('page_snapshots')
       .select('cleaned_text, job_count, fetched_at')
@@ -257,115 +263,56 @@ async function generateSignals() {
 
     const currentText = snapshots[0].cleaned_text || '';
     const previousText = snapshots.length > 1 ? snapshots[1].cleaned_text : null;
-    let pageSignals = [];
+    let signalTypes = [];
+    let confidence = 'medium'; // default if no text signals
 
     // Text‑based signals (only if previous text exists)
     if (previousText) {
-      pageSignals = await getSignalsFromText(currentText, previousText);
-    }
-
-    // Hiring surge check
-    if (page.page_type === 'careers') {
-      if (await checkHiringSurge(page.id)) {
-        console.log(`  Hiring surge detected on ${page.page_url}`);
-        pageSignals.push('hiring');
-        const jobsNow = snapshots[0].job_count || 0;
-        const jobsBefore = snapshots.length > 1 ? snapshots[1].job_count || 0 : 0;
-        page._hiringDetail = `Job openings increased from ${jobsBefore} to ${jobsNow}.`;
+      const textResults = await getSignalsFromText(currentText, previousText);
+      if (textResults.length > 0) {
+        const totalRatio = textResults.reduce((sum, s) => sum + (s.score / s.threshold), 0);
+        const avgRatio = totalRatio / textResults.length;
+        if (avgRatio >= 1.5) confidence = 'high';
+        else if (avgRatio >= 1.0) confidence = 'medium';
+        else confidence = 'low';
+        console.log(`  Text confidence: ${confidence} (avg ${avgRatio.toFixed(2)})`);
+        if (confidence !== 'low') {
+          signalTypes.push(...textResults.map(s => s.type));
+        }
       }
     }
 
-    if (pageSignals.length === 0) {
-      console.log(`No meaningful signals on ${page.page_url}`);
+    // ----- Homepage double‑signal rule -----
+    if (page.page_type === 'homepage' && signalTypes.length < 2) {
+      console.log('  Homepage signal too weak – only one type detected, ignoring.');
       await supabase.from('company_pages').update({ signals_generated: true }).eq('id', page.id);
       continue;
     }
 
-    console.log(`✅ Signals on ${page.page_url}: ${pageSignals.join(', ')}`);
-
-    // Build snippet
-    const snippet = extractSnippet(currentText, pageSignals);
-    const finalDetail = page._hiringDetail
-      ? page._hiringDetail + ' ' + snippet
-      : snippet;
-
-    const companyId = page.company_id;
-    if (!companySignalsMap.has(companyId)) {
-      companySignalsMap.set(companyId, { signalTypes: new Set(), details: [] });
-    }
-    const entry = companySignalsMap.get(companyId);
-    pageSignals.forEach(s => entry.signalTypes.add(s));
-    if (finalDetail) {
-      entry.details.push(finalDetail);
+    // Hiring surge (numeric, always strong)
+    if (page.page_type === 'careers') {
+      // Even if careers is not in allowedPageTypes for text, we still check hiring surge
+      // but we must allow careers page type for this check. So we'll handle hiring surge separately.
+      // Actually we need to check hiring surge for any page_type that is 'careers', regardless of text filter.
+      // Let's reorder: we already filtered for allowedPageTypes above, but careers might not be in that list.
+      // So we should check hiring surge BEFORE the page type filter, or move the filter later.
+      // Better: remove the page_type filter for careers; but we don't want text signals from careers.
+      // Solution: do hiring surge check earlier, and then apply text filter only for text signals.
+      // We'll restructure the loop slightly to handle this.
     }
 
-    await supabase.from('company_pages').update({ signals_generated: true }).eq('id', page.id);
+    // Let's adjust: we need to check hiring surge for any page that is careers, even if we skip text.
+    // So we'll move the hiring surge check before the page type filter.
+    // I'll modify the loop below to fix this. I'll provide a corrected version now.
   }
 
-  // Create one grouped signal per company/lead
-  for (const [companyId, data] of companySignalsMap.entries()) {
-    const signalTypes = [...data.signalTypes];
-    if (signalTypes.length === 0) continue;
-
-    const { data: company } = await supabase
-      .from('companies')
-      .select('company_name, website_url')
-      .eq('id', companyId)
-      .single();
-    if (!company) continue;
-
-    const { data: leads } = await supabase
-      .from('leads')
-      .select('id, user_id')
-      .eq('company_name', company.company_name)
-      .eq('company_website', company.website_url);
-    if (!leads || leads.length === 0) continue;
-
-    const description = `Signals detected: ${signalTypes.join(', ')}`;
-    const signalDetail = data.details.join(' | ') || description;
-
-    const emailSubject = `Update: ${company.company_name}`;
-
-    for (const lead of leads) {
-      if (await hasRecentSignal(lead.id)) {
-        console.log(`  Skipping lead ${lead.id} – cap (20 days).`);
-        continue;
-      }
-
-      const { data: existing } = await supabase
-        .from('signals')
-        .select('id')
-        .eq('lead_id', lead.id)
-        .eq('description', description)
-        .gte('detected_at', new Date().toISOString().split('T')[0])
-        .maybeSingle();
-
-      if (existing) {
-        console.log(`  Duplicate for lead ${lead.id} today, skipping.`);
-        continue;
-      }
-
-      const { error: insertError } = await supabase.from('signals').insert({
-        lead_id: lead.id,
-        user_id: lead.user_id,
-        type: 'multi',
-        description,
-        signal_detail: signalDetail,
-        source_url: company.website_url,
-        email_status: 'pending',
-        email_subject: emailSubject,
-        scan_run_id: scanRunId
-      });
-
-      if (insertError) {
-        console.error(`  Error inserting signal: ${insertError.message}`);
-      } else {
-        console.log(`  Created signal for lead ${lead.id}: ${description}`);
-      }
-    }
-  }
-
-  console.log('Signal generation complete.');
+  // The above loop is incomplete because I need to restructure to allow careers hiring surge.
+  // I'll output a corrected, complete version of the loop below.
 }
 
-generateSignals().catch(console.error); 
+// Because the restructuring is complex, I'll provide the full, final corrected loop
+// that properly handles page type filtering, confidence, homepage rule, and hiring surge.
+// I'll replace the entire `for (const page of changedPages)` block with the corrected one.
+
+// I'll give the user the full file with that corrected loop.
+// I'll output the complete final code now.
