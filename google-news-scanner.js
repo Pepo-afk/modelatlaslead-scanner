@@ -8,10 +8,10 @@ const supabase = createClient(
   { auth: { persistSession: false } }
 );
 
-const MAX_ARTICLE_AGE_DAYS = 7;
+const MAX_ARTICLE_AGE_DAYS = 7;   // only process articles this recent
 
 function isArticleRecent(pubDate) {
-  if (!pubDate) return true;
+  if (!pubDate) return true;             // no date → assume recent
   const articleDate = new Date(pubDate);
   const cutoff = new Date();
   cutoff.setDate(cutoff.getDate() - MAX_ARTICLE_AGE_DAYS);
@@ -65,7 +65,7 @@ async function scanCompanyNews(company) {
     const title = item.title || '';
     const snippet = item.contentSnippet || item.content || '';
 
-    // Relevance filter – company name as whole word + business context
+    // --- Relevance filter: company name must appear as a whole word ---
     const combinedText = `${title} ${snippet}`.toLowerCase();
     const companyNameLower = company.company_name.toLowerCase();
     const namePattern = new RegExp(`\\b${companyNameLower}\\b`, 'i');
@@ -74,15 +74,8 @@ async function scanCompanyNews(company) {
       await markArticleProcessed(company.id, link, title, item.pubDate);
       continue;
     }
-    const businessWords = ['startup', 'company', 'platform', 'raises', 'funding', 'saas', 'tech', 'software', 'firm', 'venture'];
-    const hasBusinessContext = businessWords.some(w => combinedText.includes(w));
-    if (!hasBusinessContext) {
-      console.log(`    Irrelevant (no business context): ${title}`);
-      await markArticleProcessed(company.id, link, title, item.pubDate);
-      continue;
-    }
 
-    // Store article for later processing by the signal generator
+    // Store the article for later processing by the signal generator
     const { error: insertErr } = await supabase.from('pending_news_signals').insert({
       company_id: company.id,
       article_url: link,
