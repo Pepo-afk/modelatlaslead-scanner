@@ -2,51 +2,20 @@ const { createClient } = require('@supabase/supabase-js');
 const Parser = require('rss-parser');
 const parser = new Parser();
 
-// REAL-TIME DISABLED – prevents process from hanging
 const supabase = createClient(
   process.env.SUPABASE_URL,
   process.env.SUPABASE_SERVICE_KEY,
-  {
-    auth: { persistSession: false },
-    realtime: { enabled: false }        // <--- ADD THIS LINE
-  }
+  { auth: { persistSession: false } }
 );
 
 const MAX_ARTICLE_AGE_DAYS = 7;
-const MAX_ARTICLES_TO_CHECK = 50;
 
-const KEYWORDS = {
-  funding: ['raised', 'funding', 'series a', 'series b', 'series c', 'investment', 'backed by', 'million', 'billion', 'seed round'],
-  hiring: ['hiring', 'join us', "we're growing", 'new team', 'expanding team', 'careers', 'open positions', 'now hiring'],
-  launch: ['launch', 'announcing', 'introducing', 'new product', 'now available', 'released'],
-  partnership: ['partnership', 'partner with', 'integrates with', 'collaboration', 'alliance'],
-  expansion: ['new office', 'expanding to', 'now in ', 'new location', 'global expansion'],
-  rebranding: ['rebrand', 'new look', 'new name', 'new logo', 'refresh'],
-  leadership: ['new ceo', 'new cto', 'new cfo', 'appointed', 'hired as', 'takes over as', 'promoted to'],
-};
-
-function detectSignalTypes(text) {
-  const lower = text.toLowerCase();
-  const found = [];
-  for (const [type, words] of Object.entries(KEYWORDS)) {
-    if (words.some(w => lower.includes(w))) {
-      found.push(type);
-    }
-  }
-  return [...new Set(found)];
-}
-
-async function hasRecentSignal(leadId) {
-  if (process.env.DISABLE_CAP === 'true') return false;
-  const twentyDaysAgo = new Date();
-  twentyDaysAgo.setDate(twentyDaysAgo.getDate() - 20);
-  const { data } = await supabase
-    .from('signals')
-    .select('id')
-    .eq('lead_id', leadId)
-    .gte('detected_at', twentyDaysAgo.toISOString())
-    .limit(1);
-  return data && data.length > 0;
+function isArticleRecent(pubDate) {
+  if (!pubDate) return true;
+  const articleDate = new Date(pubDate);
+  const cutoff = new Date();
+  cutoff.setDate(cutoff.getDate() - MAX_ARTICLE_AGE_DAYS);
+  return articleDate >= cutoff;
 }
 
 async function getProcessedUrls(companyId) {
@@ -55,14 +24,6 @@ async function getProcessedUrls(companyId) {
     .select('article_url')
     .eq('company_id', companyId);
   return new Set((data || []).map(row => row.article_url));
-}
-
-function isArticleRecent(pubDate) {
-  if (!pubDate) return true;
-  const articleDate = new Date(pubDate);
-  const cutoff = new Date();
-  cutoff.setDate(cutoff.getDate() - MAX_ARTICLE_AGE_DAYS);
-  return articleDate >= cutoff;
 }
 
 async function markArticleProcessed(companyId, articleUrl, title, pubDate) {
@@ -84,102 +45,62 @@ async function scanCompanyNews(company) {
     feed = await parser.parseURL(rssUrl);
   } catch (err) {
     console.log(`  Failed to fetch RSS for ${name}: ${err.message}`);
-    return new Set();
+    return;
   }
 
   if (!feed.items || feed.items.length === 0) {
     console.log(`  No news articles for ${name}`);
-    return new Set();
+    return;
   }
 
   const processedUrls = await getProcessedUrls(company.id);
-  console.log(`  ${processedUrls.size} already processed, checking up to ${Math.min(feed.items.length, MAX_ARTICLES_TO_CHECK)}…`);
-
-  const signalTypes = new Set();
-  let checkedCount = 0;
+  let newArticles = 0;
 
   for (const item of feed.items) {
-    if (checkedCount >= MAX_ARTICLES_TO_CHECK) break;
     const link = item.link;
     if (!link) continue;
-    checkedCount++;
-
     if (processedUrls.has(link)) continue;
     if (!isArticleRecent(item.pubDate)) continue;
 
     const title = item.title || '';
     const snippet = item.contentSnippet || item.content || '';
-    const text = `${title} ${snippet}`;
-    const types = detectSignalTypes(text);
 
-    if (types.length > 0) {
-      console.log(`    Signals: ${types.join(', ')} → ${link}`);
-      types.forEach(t => signalTypes.add(t));
+    // Relevance filter – company name as whole word + business context
+    const combinedText = `${title} ${snippet}`.toLowerCase();
+    const companyNameLower = company.company_name.toLowerCase();
+    const namePattern = new RegExp(`\\b${companyNameLower}\\b`, 'i');
+    if (!namePattern.test(combinedText)) {
+      console.log(`    Irrelevant (name not found): ${title}`);
+      await markArticleProcessed(company.id, link, title, item.pubDate);
+      continue;
     }
+    const businessWords = ['startup', 'company', 'platform', 'raises', 'funding', 'saas', 'tech', 'software', 'firm', 'venture'];
+    const hasBusinessContext = businessWords.some(w => combinedText.includes(w));
+    if (!hasBusinessContext) {
+      console.log(`    Irrelevant (no business context): ${title}`);
+      await markArticleProcessed(company.id, link, title, item.pubDate);
+      continue;
+    }
+
+    // Store article for later processing by the signal generator
+    const { error: insertErr } = await supabase.from('pending_news_signals').insert({
+      company_id: company.id,
+      article_url: link,
+      title,
+      snippet,
+      pub_date: item.pubDate ? new Date(item.pubDate).toISOString() : null,
+    });
+
+    if (!insertErr) newArticles++;
 
     await markArticleProcessed(company.id, link, title, item.pubDate);
   }
 
-  return signalTypes;
-}
-
-async function processCompany(company) {
-  const signalTypes = await scanCompanyNews(company);
-  if (signalTypes.size === 0) return;
-
-  const { data: leads } = await supabase
-    .from('leads')
-    .select('id, user_id')
-    .eq('company_name', company.company_name)
-    .eq('company_website', company.website_url);
-
-  if (!leads || leads.length === 0) {
-    console.log(`  No leads for ${company.company_name}, skipping.`);
-    return;
-  }
-
-  const description = `News: ${[...signalTypes].join(', ')}`;
-  const subject = `News about ${company.company_name}`;
-
-  for (const lead of leads) {
-    if (await hasRecentSignal(lead.id)) {
-      console.log(`  Skipping lead ${lead.id} (20-day cap)`);
-      continue;
-    }
-
-    const { data: existing } = await supabase
-      .from('signals')
-      .select('id')
-      .eq('lead_id', lead.id)
-      .eq('description', description)
-      .gte('detected_at', new Date().toISOString().split('T')[0])
-      .maybeSingle();
-
-    if (existing) {
-      console.log(`  Duplicate news signal for lead ${lead.id} today, skipping.`);
-      continue;
-    }
-
-    const { error: insertErr } = await supabase.from('signals').insert({
-      lead_id: lead.id,
-      user_id: lead.user_id,
-      type: 'news',
-      description,
-      source_url: company.website_url,
-      email_status: 'pending',
-      email_subject: subject,
-    });
-
-    if (insertErr) {
-      console.error(`  Error inserting signal: ${insertErr.message}`);
-    } else {
-      console.log(`  Created news signal for lead ${lead.id}`);
-    }
-  }
+  console.log(`  ${newArticles} new relevant articles stored.`);
 }
 
 async function main() {
-  console.log('Starting Google News scan (optimised)…');
+  console.log('Collecting Google News articles (no signal creation)...');
 
   const { data: companies, error } = await supabase
     .from('companies')
@@ -194,17 +115,17 @@ async function main() {
   for (const company of companies) {
     console.log(`\nScanning news for ${company.company_name}…`);
     try {
-      await processCompany(company);
+      await scanCompanyNews(company);
     } catch (e) {
       console.error(`  Error processing ${company.company_name}: ${e.message}`);
     }
   }
 
-  console.log('\nGoogle News scan complete.');
-  process.exit(0);   // <-- ensure clean exit
+  console.log('\nGoogle News collection complete.');
+  process.exit(0);
 }
 
 main().catch(err => {
   console.error(err);
   process.exit(1);
-}); 
+});
