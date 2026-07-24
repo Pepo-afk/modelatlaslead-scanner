@@ -27,12 +27,10 @@ function extractSnippet(text, signalTypes) {
     rebranding: ['rebrand', 'new look', 'new name', 'new logo', 'refresh'],
     leadership: ['new ceo', 'new cto', 'new cfo', 'appointed', 'hired as', 'takes over as'],
   };
-
   const relevant = sentences.filter(s => {
     const lower = s.toLowerCase();
     return signalTypes.some(type => (keywordMap[type] || []).some(word => lower.includes(word)));
   });
-
   return relevant.slice(0, 2).join('. ') || text.substring(0, 250);
 }
 
@@ -44,21 +42,15 @@ async function getFeedbackRatio(type) {
     .or(`type.eq.${type},description.ilike.%${type}%`)
     .order('detected_at', { ascending: false })
     .limit(50);
-
   if (!signals || signals.length === 0) return 1;
-
   const signalIds = signals.map(s => s.id);
   const { data: feedbacks } = await supabase
     .from('signal_feedback')
     .select('rating')
     .in('signal_id', signalIds);
-
   if (!feedbacks || feedbacks.length === 0) return 1;
-
   const good = feedbacks.filter(f => f.rating === 'good').length;
-  const ratio = good / feedbacks.length;
-  console.log(`  Feedback for type "${type}": ${good}/${feedbacks.length} good, ratio = ${ratio}`);
-  return ratio;
+  return good / feedbacks.length;
 }
 
 async function adjustScore(type, originalThreshold) {
@@ -72,12 +64,19 @@ async function adjustScore(type, originalThreshold) {
 async function detectFunding(text) {
   const lower = text.toLowerCase();
   let score = 0;
-  const hasFundingWord = /\b(raised|funding|series [a-c]|investment|backed by|seed round)\b/i.test(lower);
+  const hasAnnouncement = /\b(announced|closes|closed|raises|raised|secures|secured|just raised|today announces|announced today)\b/i.test(lower);
   const hasAmount = /\$\d+[mMkKbB]?|\d+\s?(million|billion)/i.test(lower);
-  if (hasFundingWord && hasAmount) score += 3;
-  if (/\bseries [a-c]\b/i.test(lower) && hasAmount) score += 3;
-  if (/\b(valuation|pre\-money|post\-money)\b/i.test(lower)) score += 2;
-  let threshold = 6;
+  if (hasAnnouncement && hasAmount) score += 5;
+  else if (hasAnnouncement) score += 2;
+  else if (hasAmount) score += 1;
+  if (/\b(today|yesterday|this week|this month)\b/i.test(lower)) score += 1;
+  const currentYear = new Date().getFullYear();
+  const yearMatch = lower.match(/\b(20\d{2})\b/g);
+  if (yearMatch) {
+    const recentYears = yearMatch.filter(y => parseInt(y) >= currentYear - 1);
+    if (recentYears.length === 0 && yearMatch.length > 0) score -= 3;
+  }
+  let threshold = 5;
   threshold = await adjustScore('funding', threshold);
   return { triggered: score >= threshold, score: score, threshold: threshold };
 }
@@ -149,7 +148,6 @@ async function detectLeadershipChange(text) {
 async function getSignalsFromText(text, oldText = null) {
   const analysisText = oldText ? getAddedText(oldText, text) : text;
   if (!analysisText || analysisText.length < 30) return [];
-
   const detectors = [
     { type: 'funding', fn: detectFunding },
     { type: 'hiring', fn: detectHiringSurgeText },
@@ -159,13 +157,10 @@ async function getSignalsFromText(text, oldText = null) {
     { type: 'rebranding', fn: detectRebranding },
     { type: 'leadership', fn: detectLeadershipChange },
   ];
-
   const results = [];
   for (const { type, fn } of detectors) {
     const res = await fn(analysisText);
-    if (res.triggered) {
-      results.push({ type: type, score: res.score, threshold: res.threshold });
-    }
+    if (res.triggered) results.push({ type: type, score: res.score, threshold: res.threshold });
   }
   return results;
 }
@@ -178,7 +173,6 @@ async function checkHiringSurge(pageId) {
     .eq('company_page_id', pageId)
     .order('fetched_at', { ascending: false })
     .limit(2);
-
   if (!snapshots || snapshots.length < 2) return false;
   const prev = snapshots[1].job_count;
   const curr = snapshots[0].job_count;
@@ -201,7 +195,7 @@ async function hasRecentSignal(leadId) {
 
 // ---------- MAIN ----------
 async function generateSignals() {
-  console.log('Generating detailed signals (with confidence filter)...');
+  console.log('Generating signals from websites and news (with confidence filter & source tracking)...');
 
   const { data: latestRun } = await supabase
     .from('scan_runs')
@@ -215,176 +209,151 @@ async function generateSignals() {
     return;
   }
 
-  const { data: changedPages, error } = await supabase
+  // ---------- 1. Website signals ----------
+  const { data: changedPages, error: pagesError } = await supabase
     .from('company_pages')
-    .select(`
-      id,
-      page_url,
-      page_type,
-      company_id,
-      companies!inner(company_name, website_url)
-    `)
+    .select(`id, page_url, page_type, company_id, companies!inner(company_name, website_url)`)
     .eq('last_status', 'changed')
     .eq('signals_generated', false);
 
-  if (error) {
-    console.error('Error fetching changed pages:', error.message);
-    return;
-  }
-  if (!changedPages || changedPages.length === 0) {
-    console.log('No new changes to process.');
-    return;
-  }
+  // ---------- 2. News signals ----------
+  const { data: newsEntries, error: newsError } = await supabase
+    .from('pending_news_signals')
+    .select('id, company_id, article_url, title, snippet, pub_date, companies!inner(company_name, website_url)');
 
-  console.log(`Processing ${changedPages.length} changed pages...`);
+  // Map: company_id -> { companyName, websiteUrl, signalTypes: Set, details: [], sources: [] }
+  const companySignalsMap = new Map();
 
-  const companySignalsMap = new Map(); // company_id -> { signalTypes: Set, details: [] }
-
-  for (const page of changedPages) {
-    // ----- 1. Hiring surge check (works for any page that is careers, regardless of text) -----
-    let hiringSurgeDetected = false;
-    let hiringDetail = '';
-    if (page.page_type === 'careers') {
-      const { data: snapshots } = await supabase
-        .from('page_snapshots')
-        .select('cleaned_text, job_count, fetched_at')
-        .eq('company_page_id', page.id)
-        .order('fetched_at', { ascending: false })
-        .limit(2);
-
-      if (snapshots && snapshots.length >= 2) {
-        if (await checkHiringSurge(page.id)) {
-          console.log(`  Hiring surge detected on ${page.page_url}`);
-          hiringSurgeDetected = true;
-          const jobsNow = snapshots[0].job_count || 0;
-          const jobsBefore = snapshots[1].job_count || 0;
-          hiringDetail = `Job openings increased from ${jobsBefore} to ${jobsNow}.`;
-        }
-      } else if (snapshots && snapshots.length === 1) {
-        // First scan, can't compare, skip hiring surge
-      }
-      // We can also skip text signals for careers pages entirely, so we'll mark page as processed if only hiring surge was found.
-    }
-
-    // ----- 2. Text‑based signals (only for allowed page types) -----
-    const allowedPageTypes = ['blog', 'news', 'press', 'homepage'];
-    let textSignalTypes = [];
-    let confidence = 'none';
-    if (allowedPageTypes.includes(page.page_type)) {
-      const { data: snapshots } = await supabase
-        .from('page_snapshots')
-        .select('cleaned_text, job_count, fetched_at')
-        .eq('company_page_id', page.id)
-        .order('fetched_at', { ascending: false })
-        .limit(2);
-
-      if (snapshots && snapshots.length >= 2) {
-        const currentText = snapshots[0].cleaned_text || '';
-        const previousText = snapshots[1].cleaned_text || null;
-        if (previousText) {
-          const textResults = await getSignalsFromText(currentText, previousText);
-          if (textResults.length > 0) {
-            const totalRatio = textResults.reduce((sum, s) => sum + (s.score / s.threshold), 0);
-            const avgRatio = totalRatio / textResults.length;
-            if (avgRatio >= 1.5) confidence = 'high';
-            else if (avgRatio >= 1.0) confidence = 'medium';
-            else confidence = 'low';
-            console.log(`  Text confidence: ${confidence} (avg ${avgRatio.toFixed(2)})`);
-            if (confidence !== 'low') {
-              textSignalTypes = textResults.map(s => s.type);
-            }
-          }
-        }
-      }
-    }
-
-    // ----- 3. Combine signals (hiring + text) -----
-    const allSignalTypes = [];
-    if (hiringSurgeDetected) allSignalTypes.push('hiring');
-    allSignalTypes.push(...textSignalTypes);
-
-    // ----- 4. Homepage double‑signal rule -----
-    if (page.page_type === 'homepage' && allSignalTypes.length < 2) {
-      console.log('  Homepage signal too weak – only one type detected, ignoring.');
-      await supabase.from('company_pages').update({ signals_generated: true }).eq('id', page.id);
-      continue;
-    }
-
-    // ----- 5. If no signals, skip -----
-    if (allSignalTypes.length === 0) {
-      console.log(`No meaningful signals on ${page.page_url}`);
-      await supabase.from('company_pages').update({ signals_generated: true }).eq('id', page.id);
-      continue;
-    }
-
-    console.log(`✅ Signals on ${page.page_url}: ${allSignalTypes.join(', ')} (confidence: ${confidence})`);
-
-    // ----- 6. Build snippet -----
-    // Need current text for snippet (use the same snapshots we fetched if available; we'll fetch again for simplicity)
-    const { data: snapshotsForSnippet } = await supabase
-      .from('page_snapshots')
-      .select('cleaned_text')
-      .eq('company_page_id', page.id)
-      .order('fetched_at', { ascending: false })
-      .limit(1)
-      .single();
-    const currentText = snapshotsForSnippet?.cleaned_text || '';
-    const snippet = extractSnippet(currentText, allSignalTypes);
-    const finalDetail = hiringDetail ? hiringDetail + ' ' + snippet : snippet;
-
-    const companyId = page.company_id;
+  function addSignalToCompany(companyId, companyName, websiteUrl, type, detail, sourceObj) {
     if (!companySignalsMap.has(companyId)) {
-      companySignalsMap.set(companyId, { signalTypes: new Set(), details: [] });
+      companySignalsMap.set(companyId, {
+        companyName,
+        websiteUrl,
+        signalTypes: new Set(),
+        details: [],
+        sources: []
+      });
     }
     const entry = companySignalsMap.get(companyId);
-    allSignalTypes.forEach(s => entry.signalTypes.add(s));
-    if (finalDetail) entry.details.push(finalDetail);
-
-    await supabase.from('company_pages').update({ signals_generated: true }).eq('id', page.id);
+    entry.signalTypes.add(type);
+    if (detail) entry.details.push(detail);
+    if (sourceObj) entry.sources.push(sourceObj);
   }
 
-  // Create one grouped signal per company/lead
+  // Process website changes
+  if (changedPages) {
+    for (const page of changedPages) {
+      // Hiring surge
+      if (page.page_type === 'careers') {
+        if (await checkHiringSurge(page.id)) {
+          const { data: snapshots } = await supabase
+            .from('page_snapshots')
+            .select('job_count')
+            .eq('company_page_id', page.id)
+            .order('fetched_at', { ascending: false })
+            .limit(2);
+          const now = snapshots?.[0]?.job_count || 0;
+          const before = snapshots?.[1]?.job_count || 0;
+          addSignalToCompany(page.company_id, page.companies.company_name, page.companies.website_url,
+            'hiring', `Job openings increased from ${before} to ${now}.`,
+            { label: 'Careers page', url: page.page_url });
+        }
+      }
+
+      const allowedTypes = ['blog', 'news', 'press', 'homepage'];
+      if (!allowedTypes.includes(page.page_type)) {
+        await supabase.from('company_pages').update({ signals_generated: true }).eq('id', page.id);
+        continue;
+      }
+
+      const { data: snapshots } = await supabase
+        .from('page_snapshots')
+        .select('cleaned_text')
+        .eq('company_page_id', page.id)
+        .order('fetched_at', { ascending: false })
+        .limit(2);
+      if (!snapshots || snapshots.length < 2) {
+        await supabase.from('company_pages').update({ signals_generated: true }).eq('id', page.id);
+        continue;
+      }
+
+      const currentText = snapshots[0].cleaned_text || '';
+      const previousText = snapshots[1].cleaned_text || '';
+      const textResults = await getSignalsFromText(currentText, previousText);
+      if (textResults.length === 0) {
+        await supabase.from('company_pages').update({ signals_generated: true }).eq('id', page.id);
+        continue;
+      }
+
+      const totalRatio = textResults.reduce((sum, s) => sum + (s.score / s.threshold), 0);
+      const avgRatio = totalRatio / textResults.length;
+      let confidence = 'low';
+      if (avgRatio >= 1.5) confidence = 'high';
+      else if (avgRatio >= 1.0) confidence = 'medium';
+
+      if (confidence === 'low') {
+        await supabase.from('company_pages').update({ signals_generated: true }).eq('id', page.id);
+        continue;
+      }
+
+      if (page.page_type === 'homepage' && textResults.length < 2) {
+        await supabase.from('company_pages').update({ signals_generated: true }).eq('id', page.id);
+        continue;
+      }
+
+      const snippet = extractSnippet(currentText, textResults.map(s => s.type));
+      textResults.forEach(s => addSignalToCompany(
+        page.company_id, page.companies.company_name, page.companies.website_url,
+        s.type, snippet,
+        { label: `${page.page_type}: ${page.page_url}`, url: page.page_url }
+      ));
+
+      await supabase.from('company_pages').update({ signals_generated: true }).eq('id', page.id);
+    }
+  }
+
+  // Process news articles
+  if (newsEntries) {
+    for (const news of newsEntries) {
+      const text = `${news.title} ${news.snippet}`;
+      const textResults = await getSignalsFromText(text, null);
+      if (textResults.length === 0) continue;
+
+      const totalRatio = textResults.reduce((sum, s) => sum + (s.score / s.threshold), 0);
+      const avgRatio = totalRatio / textResults.length;
+      let confidence = 'low';
+      if (avgRatio >= 1.5) confidence = 'high';
+      else if (avgRatio >= 1.0) confidence = 'medium';
+
+      if (confidence === 'low') continue;
+
+      const snippet = extractSnippet(text, textResults.map(s => s.type));
+      textResults.forEach(s => addSignalToCompany(
+        news.company_id, news.companies.company_name, news.companies.website_url,
+        s.type, snippet,
+        { label: `News: ${news.title}`, url: news.article_url }
+      ));
+    }
+  }
+
+  // ---------- 3. Create grouped signals ----------
   for (const [companyId, data] of companySignalsMap.entries()) {
     const signalTypes = [...data.signalTypes];
     if (signalTypes.length === 0) continue;
 
-    const { data: company } = await supabase
-      .from('companies')
-      .select('company_name, website_url')
-      .eq('id', companyId)
-      .single();
-    if (!company) continue;
-
     const { data: leads } = await supabase
       .from('leads')
       .select('id, user_id')
-      .eq('company_name', company.company_name)
-      .eq('company_website', company.website_url);
+      .eq('company_name', data.companyName)
+      .eq('company_website', data.websiteUrl);
     if (!leads || leads.length === 0) continue;
 
     const description = `Signals detected: ${signalTypes.join(', ')}`;
     const signalDetail = data.details.join(' | ') || description;
-
-    const emailSubject = `Update: ${company.company_name}`;
+    const sourceUrls = data.sources; // array of {label, url}
 
     for (const lead of leads) {
-      if (await hasRecentSignal(lead.id)) {
-        console.log(`  Skipping lead ${lead.id} – cap (20 days).`);
-        continue;
-      }
-
-      const { data: existing } = await supabase
-        .from('signals')
-        .select('id')
-        .eq('lead_id', lead.id)
-        .eq('description', description)
-        .gte('detected_at', new Date().toISOString().split('T')[0])
-        .maybeSingle();
-
-      if (existing) {
-        console.log(`  Duplicate for lead ${lead.id} today, skipping.`);
-        continue;
-      }
+      if (await hasRecentSignal(lead.id)) continue;
 
       const { error: insertError } = await supabase.from('signals').insert({
         lead_id: lead.id,
@@ -392,18 +361,25 @@ async function generateSignals() {
         type: 'multi',
         description,
         signal_detail: signalDetail,
-        source_url: company.website_url,
+        source_url: data.websiteUrl,
+        source_urls: sourceUrls,
         email_status: 'pending',
-        email_subject: emailSubject,
+        email_subject: `Update: ${data.companyName}`,
         scan_run_id: scanRunId
       });
 
       if (insertError) {
         console.error(`  Error inserting signal: ${insertError.message}`);
       } else {
-        console.log(`  Created signal for lead ${lead.id}: ${description}`);
+        console.log(`  Created signal for lead ${lead.id}: ${description} (${sourceUrls.length} sources)`);
       }
     }
+  }
+
+  // Delete processed news articles
+  if (newsEntries && newsEntries.length > 0) {
+    const idsToDelete = newsEntries.map(n => n.id);
+    await supabase.from('pending_news_signals').delete().in('id', idsToDelete);
   }
 
   console.log('Signal generation complete.');
