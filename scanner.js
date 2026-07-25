@@ -2,7 +2,6 @@ const axios = require('axios');
 const cheerio = require('cheerio');
 const crypto = require('crypto');
 const { createClient } = require('@supabase/supabase-js');
-const pLimit = require('p-limit');
 
 const supabase = createClient(
   process.env.SUPABASE_URL,
@@ -108,6 +107,22 @@ function classifyPageType(url) {
   return 'other';
 }
 
+// ---------- simple concurrency helper (no external packages) ----------
+async function concurrentMap(items, limit, asyncFn) {
+  let index = 0;
+  const results = new Array(items.length);
+  async function worker() {
+    while (index < items.length) {
+      const currentIdx = index++;
+      results[currentIdx] = await asyncFn(items[currentIdx]);
+    }
+  }
+  const workers = Array.from({ length: limit }, () => worker());
+  await Promise.all(workers);
+  return results;
+}
+// ------------------------------------------------------------------
+
 async function scanCompany(company, scanRunId) {
   let website = company.website_url;
   if (!website || website.includes('linkedin.com')) return;
@@ -140,22 +155,18 @@ async function scanCompany(company, scanRunId) {
     }
   }
 
-  const limit = pLimit(MAX_CONCURRENT_PAGES);
-  const pageResults = await Promise.all(
-    selected.map(pageUrl =>
-      limit(async () => {
-        const res = await fetchPage(pageUrl);
-        if (!res) return null;
-        const $ = cheerio.load(res.data);
-        const cleanedText = extractVisibleText($);
-        const textHash = hashText(cleanedText);
-        const pageType = classifyPageType(pageUrl);
-        let jobCount = null;
-        if (pageType === 'careers') jobCount = countJobs(res.data);
-        return { pageUrl, pageType, cleanedText, textHash, jobCount };
-      })
-    )
-  );
+  // Fetch all selected pages concurrently (limited)
+  const pageResults = await concurrentMap(selected, MAX_CONCURRENT_PAGES, async (pageUrl) => {
+    const res = await fetchPage(pageUrl);
+    if (!res) return null;
+    const $ = cheerio.load(res.data);
+    const cleanedText = extractVisibleText($);
+    const textHash = hashText(cleanedText);
+    const pageType = classifyPageType(pageUrl);
+    let jobCount = null;
+    if (pageType === 'careers') jobCount = countJobs(res.data);
+    return { pageUrl, pageType, cleanedText, textHash, jobCount };
+  });
 
   const { data: existingPages } = await supabase
     .from('company_pages')
@@ -257,4 +268,4 @@ async function main() {
   console.log('Scan complete!');
 }
 
-main().catch(console.error);
+main().catch(console.error); 
