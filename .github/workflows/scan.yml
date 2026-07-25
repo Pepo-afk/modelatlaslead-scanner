@@ -15,7 +15,7 @@ jobs:
         with:
           node-version: '24'
 
-      - run: npm install axios cheerio @supabase/supabase-js rss-parser p-limit
+      - run: npm install axios cheerio @supabase/supabase-js rss-parser 
 
       # 1. Scan company websites (fast, no junk)
       - name: Run Web Scanner
