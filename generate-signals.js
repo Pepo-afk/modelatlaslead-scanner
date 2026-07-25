@@ -34,7 +34,7 @@ function extractSnippet(text, signalTypes) {
   return relevant.slice(0, 2).join('. ') || text.substring(0, 250);
 }
 
-// ---------- FEEDBACK LEARNING ----------
+// ---------- FEEDBACK LEARNING (gentle) ----------
 async function getFeedbackRatio(type) {
   const { data: signals } = await supabase
     .from('signals')
@@ -42,21 +42,33 @@ async function getFeedbackRatio(type) {
     .or(`type.eq.${type},description.ilike.%${type}%`)
     .order('detected_at', { ascending: false })
     .limit(50);
-  if (!signals || signals.length === 0) return 1;
+  if (!signals || signals.length === 0) return { ratio: 1, count: 0 };
   const signalIds = signals.map(s => s.id);
   const { data: feedbacks } = await supabase
     .from('signal_feedback')
     .select('rating')
     .in('signal_id', signalIds);
-  if (!feedbacks || feedbacks.length === 0) return 1;
+  if (!feedbacks || feedbacks.length === 0) return { ratio: 1, count: 0 };
   const good = feedbacks.filter(f => f.rating === 'good').length;
-  return good / feedbacks.length;
+  return { ratio: good / feedbacks.length, count: feedbacks.length };
 }
 
 async function adjustScore(type, originalThreshold) {
-  const ratio = await getFeedbackRatio(type);
-  if (ratio < 0.4) return originalThreshold * 10;
-  if (ratio < 0.6) return originalThreshold * 2;
+  const { ratio, count } = await getFeedbackRatio(type);
+
+  if (count < 10) {
+    console.log(`  Feedback for "${type}" too small (${count} votes), keeping base threshold.`);
+    return originalThreshold;
+  }
+
+  if (ratio < 0.3) {
+    console.log(`  Poor feedback for "${type}" (ratio ${ratio.toFixed(2)}), increasing threshold 1.5x.`);
+    return originalThreshold * 1.5;
+  }
+  if (ratio < 0.5) {
+    console.log(`  Mixed feedback for "${type}" (ratio ${ratio.toFixed(2)}), increasing threshold slightly.`);
+    return originalThreshold * 1.2;
+  }
   return originalThreshold;
 }
 
@@ -110,7 +122,7 @@ async function detectPartnership(text) {
   let score = 0;
   if (/\b(partner(ship|ing|s with)|integrat(es|ing|ed with)|collaborat(es|ing|ed with)|alliance with)\b/i.test(lower)) score += 2;
   if (/\b(together with|teaming up)\b/i.test(lower)) score += 1;
-  let threshold = 4;
+  let threshold = 3;   // lowered from 4
   threshold = await adjustScore('partnership', threshold);
   return { triggered: score >= threshold, score: score, threshold: threshold };
 }
@@ -195,7 +207,7 @@ async function hasRecentSignal(leadId) {
 
 // ---------- MAIN ----------
 async function generateSignals() {
-  console.log('Generating signals (DIAGNOSTIC MODE – all page types, lots of logs)...');
+  console.log('Generating signals (gentle learning, diagnostic logs)...');
 
   const { data: latestRun } = await supabase
     .from('scan_runs')
@@ -209,7 +221,7 @@ async function generateSignals() {
     return;
   }
 
-  // ----- Changed pages (no join) -----
+  // ----- Changed pages -----
   const { data: changedPages, error: pagesErr } = await supabase
     .from('company_pages')
     .select('id, page_url, page_type, company_id')
@@ -257,20 +269,20 @@ async function generateSignals() {
         .single();
 
       if (!company) {
-        console.log(`    ❌ Company not found for company_id ${page.company_id}, skipping.`);
+        console.log('    ❌ Company not found, skipping.');
         await supabase.from('company_pages').update({ signals_generated: true }).eq('id', page.id);
         continue;
       }
 
-      // ----- TEMPORARY: allow ALL page types -----
+      // Allow all page types for now
       const allowedTypes = ['blog', 'news', 'press', 'homepage', 'careers', 'about', 'other'];
       if (!allowedTypes.includes(page.page_type)) {
-        console.log(`    Page type ${page.page_type} not allowed, skipping.`);
+        console.log(`    Page type ${page.page_type} not allowed.`);
         await supabase.from('company_pages').update({ signals_generated: true }).eq('id', page.id);
         continue;
       }
 
-      // Hiring surge (only for careers)
+      // Hiring surge
       if (page.page_type === 'careers') {
         if (await checkHiringSurge(page.id)) {
           const { data: snapshots } = await supabase
@@ -284,11 +296,11 @@ async function generateSignals() {
           addSignalToCompany(page.company_id, company.company_name, company.website_url,
             'hiring', `Job openings increased from ${before} to ${now}.`,
             { label: 'Careers page', url: page.page_url });
-          console.log('    ✅ Hiring surge signal added.');
+          console.log('    ✅ Hiring surge.');
         }
       }
 
-      // Text signals
+      // Text analysis
       const { data: snapshots } = await supabase
         .from('page_snapshots')
         .select('cleaned_text')
@@ -327,7 +339,7 @@ async function generateSignals() {
         continue;
       }
 
-      // Homepage double-signal rule
+      // For homepage, still require at least 2 signal types (to avoid noise)
       if (page.page_type === 'homepage' && textResults.length < 2) {
         console.log('    Homepage with only one signal type, skipping.');
         await supabase.from('company_pages').update({ signals_generated: true }).eq('id', page.id);
@@ -358,7 +370,7 @@ async function generateSignals() {
         .single();
 
       if (!company) {
-        console.log(`    ❌ Company not found, skipping.`);
+        console.log('    ❌ Company not found, skipping.');
         continue;
       }
 
@@ -376,10 +388,7 @@ async function generateSignals() {
       else if (avgRatio >= 1.0) confidence = 'medium';
       console.log(`    Confidence: ${confidence} (avg ${avgRatio.toFixed(2)})`);
 
-      if (confidence === 'low') {
-        console.log('    Low confidence, skipping.');
-        continue;
-      }
+      if (confidence === 'low') continue;
 
       const snippet = extractSnippet(text, textResults.map(s => s.type));
       textResults.forEach(s => addSignalToCompany(
@@ -392,12 +401,9 @@ async function generateSignals() {
   }
 
   // ------- Create grouped signals -------
-  console.log('\nCreating grouped signals...');
   for (const [companyId, data] of companySignalsMap.entries()) {
     const signalTypes = [...data.signalTypes];
     if (signalTypes.length === 0) continue;
-
-    console.log(`  Company ${data.companyName}: ${signalTypes.join(', ')}`);
 
     const { data: leads } = await supabase
       .from('leads')
@@ -405,7 +411,7 @@ async function generateSignals() {
       .eq('company_name', data.companyName)
       .eq('company_website', data.websiteUrl);
     if (!leads || leads.length === 0) {
-      console.log('    No leads found, skipping.');
+      console.log(`  No leads for ${data.companyName}.`);
       continue;
     }
 
@@ -415,7 +421,7 @@ async function generateSignals() {
 
     for (const lead of leads) {
       if (await hasRecentSignal(lead.id)) {
-        console.log(`    Lead ${lead.id} blocked by 20-day cap.`);
+        console.log(`  Lead ${lead.id} blocked by 20-day cap.`);
         continue;
       }
 
@@ -433,9 +439,9 @@ async function generateSignals() {
       });
 
       if (insertError) {
-        console.error(`    Error inserting signal: ${insertError.message}`);
+        console.error(`  Error inserting signal: ${insertError.message}`);
       } else {
-        console.log(`    ✅ Signal created for lead ${lead.id}`);
+        console.log(`  ✅ Signal created for lead ${lead.id}`);
       }
     }
   }
@@ -450,6 +456,6 @@ async function generateSignals() {
 }
 
 generateSignals().catch(err => {
-  console.error('Fatal error in generateSignals:', err);
+  console.error('Fatal error:', err);
   process.exit(1);
 });
