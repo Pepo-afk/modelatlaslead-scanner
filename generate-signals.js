@@ -6,6 +6,33 @@ const supabase = createClient(
   { auth: { persistSession: false } }
 );
 
+// ---------- WORD-LEVEL LEARNING DATA ----------
+let wordWeights = new Map(); // word -> multiplier (1 = neutral)
+
+async function loadWordWeights() {
+  const { data, error } = await supabase
+    .from('word_feedback')
+    .select('word, good, bad');
+  if (error) {
+    console.error('Failed to load word feedback:', error.message);
+    return;
+  }
+  wordWeights.clear();
+  for (const row of data || []) {
+    const total = row.good + row.bad;
+    if (total === 0) continue;
+    const ratio = row.good / total;
+    if (ratio < 0.3) wordWeights.set(row.word, 0.1);
+    else if (ratio < 0.5) wordWeights.set(row.word, 0.5);
+    else wordWeights.set(row.word, 1.0);
+  }
+  console.log(`Loaded ${wordWeights.size} word weights.`);
+}
+
+function getWordWeight(word) {
+  return wordWeights.get(word) ?? 1.0;
+}
+
 // ---------- TEXT HELPERS ----------
 function getAddedText(oldText, newText) {
   if (!oldText) return newText || '';
@@ -34,7 +61,7 @@ function extractSnippet(text, signalTypes) {
   return relevant.slice(0, 2).join('. ') || text.substring(0, 250);
 }
 
-// ---------- FEEDBACK LEARNING (gentle) ----------
+// ---------- FEEDBACK LEARNING (category thresholds) ----------
 async function getFeedbackRatio(type) {
   const { data: signals } = await supabase
     .from('signals')
@@ -55,33 +82,47 @@ async function getFeedbackRatio(type) {
 
 async function adjustScore(type, originalThreshold) {
   const { ratio, count } = await getFeedbackRatio(type);
-
-  if (count < 10) {
-    console.log(`  Feedback for "${type}" too small (${count} votes), keeping base threshold.`);
-    return originalThreshold;
-  }
-
-  if (ratio < 0.3) {
-    console.log(`  Poor feedback for "${type}" (ratio ${ratio.toFixed(2)}), increasing threshold 1.5x.`);
-    return originalThreshold * 1.5;
-  }
-  if (ratio < 0.5) {
-    console.log(`  Mixed feedback for "${type}" (ratio ${ratio.toFixed(2)}), increasing threshold slightly.`);
-    return originalThreshold * 1.2;
-  }
+  if (count < 10) return originalThreshold;
+  if (ratio < 0.3) return originalThreshold * 1.5;
+  if (ratio < 0.5) return originalThreshold * 1.2;
   return originalThreshold;
 }
 
-// ---------- SIGNAL DETECTION (returns { triggered, score, threshold }) ----------
+// ---------- DETECTION FUNCTIONS (per-word weighted scoring) ----------
+// Each returns { triggered, score, threshold, matchedWords }
+
 async function detectFunding(text) {
   const lower = text.toLowerCase();
+  const keywords = [
+    { phrase: 'announced', points: 2 },
+    { phrase: 'closes', points: 2 },
+    { phrase: 'closed', points: 2 },
+    { phrase: 'raises', points: 2 },
+    { phrase: 'raised', points: 2 },
+    { phrase: 'secures', points: 2 },
+    { phrase: 'secured', points: 2 },
+    { phrase: 'just raised', points: 3 },
+    { phrase: 'today announces', points: 3 },
+    { phrase: 'announced today', points: 3 },
+  ];
   let score = 0;
-  const hasAnnouncement = /\b(announced|closes|closed|raises|raised|secures|secured|just raised|today announces|announced today)\b/i.test(lower);
+  const matched = [];
+  for (const kw of keywords) {
+    if (lower.includes(kw.phrase)) {
+      const weight = getWordWeight(kw.phrase);
+      score += kw.points * weight;
+      matched.push(kw.phrase);
+    }
+  }
+  // Amount pattern (non-weightable, always full points)
   const hasAmount = /\$\d+[mMkKbB]?|\d+\s?(million|billion)/i.test(lower);
-  if (hasAnnouncement && hasAmount) score += 5;
-  else if (hasAnnouncement) score += 2;
-  else if (hasAmount) score += 1;
+  if (hasAmount) {
+    score += 3;
+    matched.push('AMOUNT_PATTERN');
+  }
+  // Recent date bonus
   if (/\b(today|yesterday|this week|this month)\b/i.test(lower)) score += 1;
+  // Penalty for old year
   const currentYear = new Date().getFullYear();
   const yearMatch = lower.match(/\b(20\d{2})\b/g);
   if (yearMatch) {
@@ -90,71 +131,200 @@ async function detectFunding(text) {
   }
   let threshold = 5;
   threshold = await adjustScore('funding', threshold);
-  return { triggered: score >= threshold, score: score, threshold: threshold };
+  return { triggered: score >= threshold, score, threshold, matchedWords: matched };
 }
 
 async function detectHiringSurgeText(text) {
   const lower = text.toLowerCase();
+  const keywords = [
+    { phrase: "we're hiring", points: 3 },
+    { phrase: 'we are hiring', points: 3 },
+    { phrase: 'now hiring', points: 3 },
+    { phrase: 'expanding our team', points: 3 },
+    { phrase: 'expanding the team', points: 3 },
+    { phrase: 'join our team', points: 3 },
+    { phrase: 'join the team', points: 3 },
+    { phrase: 'multiple openings', points: 3 },
+    { phrase: 'hiring spree', points: 3 },
+    { phrase: 'new position', points: 1 },
+    { phrase: 'additional position', points: 1 },
+    { phrase: 'new role', points: 1 },
+    { phrase: 'additional role', points: 1 },
+    { phrase: 'growing our team', points: 2 },
+    { phrase: 'growing the team', points: 2 },
+  ];
   let score = 0;
-  if (/\b(we('re| are) hiring|now hiring|expanding (our |the )?team|join (our |the )?team|multiple openings|hiring spree)\b/i.test(lower)) score += 3;
-  if (/\b(new|additional) (position|role|opening)/i.test(lower)) score += 1;
-  if (/\b(growing (our |the )?(team|engineering|sales|marketing|support) (team|department|unit))\b/i.test(lower)) score += 2;
+  const matched = [];
+  for (const kw of keywords) {
+    if (lower.includes(kw.phrase)) {
+      const weight = getWordWeight(kw.phrase);
+      score += kw.points * weight;
+      matched.push(kw.phrase);
+    }
+  }
+  // penalize isolated "careers" without action
   if (lower.includes('careers') && !/\b(hiring|join|apply|openings)\b/i.test(lower)) score -= 1;
   let threshold = 3;
   threshold = await adjustScore('hiring', threshold);
-  return { triggered: score >= threshold, score: score, threshold: threshold };
+  return { triggered: score >= threshold, score, threshold, matchedWords: matched };
 }
 
 async function detectProductLaunch(text) {
   const lower = text.toLowerCase();
+  const keywords = [
+    { phrase: 'introducing', points: 2 },
+    { phrase: 'announcing', points: 2 },
+    { phrase: 'unveil', points: 2 },
+    { phrase: 'launch', points: 2 },
+    { phrase: 'launched', points: 2 },
+    { phrase: 'launches', points: 2 },
+    { phrase: 'launching', points: 2 },
+    { phrase: 'now available', points: 2 },
+    { phrase: 'new product', points: 3 },
+    { phrase: 'new feature', points: 3 },
+    { phrase: 'new platform', points: 3 },
+    { phrase: 'new tool', points: 3 },
+    { phrase: 'new app', points: 3 },
+    { phrase: 'new dashboard', points: 3 },
+    { phrase: 'new API', points: 3 },
+    { phrase: 'released', points: 2 },
+    { phrase: 'shipped', points: 2 },
+    { phrase: 'deployed', points: 2 },
+    { phrase: 'rolled out', points: 2 },
+  ];
   let score = 0;
-  if (/\b(introducing|announcing|unveil|launch(es|ed|ing)?|now available|new (product|feature|platform|integration))\b/i.test(lower)) score += 2;
-  if (/\b(new (product|feature|platform|tool|app|dashboard|API))\b/i.test(lower)) score += 3;
-  if (/\b(released|shipped|deployed|rolled out)\b/i.test(lower)) score += 2;
+  const matched = [];
+  for (const kw of keywords) {
+    if (lower.includes(kw.phrase)) {
+      const weight = getWordWeight(kw.phrase);
+      score += kw.points * weight;
+      matched.push(kw.phrase);
+    }
+  }
   if (/\blaunching soon\b/i.test(lower)) score -= 1;
   let threshold = 5;
   threshold = await adjustScore('launch', threshold);
-  return { triggered: score >= threshold, score: score, threshold: threshold };
+  return { triggered: score >= threshold, score, threshold, matchedWords: matched };
 }
 
 async function detectPartnership(text) {
   const lower = text.toLowerCase();
+  const keywords = [
+    { phrase: 'partnership', points: 2 },
+    { phrase: 'partnering', points: 2 },
+    { phrase: 'partners with', points: 2 },
+    { phrase: 'partner with', points: 2 },
+    { phrase: 'integrates with', points: 2 },
+    { phrase: 'integrating with', points: 2 },
+    { phrase: 'integrated with', points: 2 },
+    { phrase: 'collaborates with', points: 2 },
+    { phrase: 'collaborating with', points: 2 },
+    { phrase: 'collaborated with', points: 2 },
+    { phrase: 'alliance with', points: 2 },
+    { phrase: 'together with', points: 1 },
+    { phrase: 'teaming up', points: 1 },
+  ];
   let score = 0;
-  if (/\b(partner(ship|ing|s with)|integrat(es|ing|ed with)|collaborat(es|ing|ed with)|alliance with)\b/i.test(lower)) score += 2;
-  if (/\b(together with|teaming up)\b/i.test(lower)) score += 1;
-  let threshold = 3;   // lowered from 4
+  const matched = [];
+  for (const kw of keywords) {
+    if (lower.includes(kw.phrase)) {
+      const weight = getWordWeight(kw.phrase);
+      score += kw.points * weight;
+      matched.push(kw.phrase);
+    }
+  }
+  let threshold = 3;
   threshold = await adjustScore('partnership', threshold);
-  return { triggered: score >= threshold, score: score, threshold: threshold };
+  return { triggered: score >= threshold, score, threshold, matchedWords: matched };
 }
 
 async function detectExpansion(text) {
   const lower = text.toLowerCase();
+  const keywords = [
+    { phrase: 'new office', points: 2 },
+    { phrase: 'new location', points: 2 },
+    { phrase: 'new city', points: 2 },
+    { phrase: 'new country', points: 2 },
+    { phrase: 'new region', points: 2 },
+    { phrase: 'expanding to', points: 2 },
+    { phrase: 'expanding into', points: 2 },
+    { phrase: 'now in', points: 2 },
+    { phrase: 'global expansion', points: 2 },
+    { phrase: 'opening an office', points: 2 },
+    { phrase: 'opening a office', points: 2 },
+  ];
   let score = 0;
-  if (/\b(new (office|location|city|country|region)|expanding (to|into)|now in [A-Z]|global expansion|opening (a|an) office)\b/i.test(lower)) score += 2;
-  if (/\b(expanded|opening|launching) (in|across|into) [A-Z][a-z]+\b/i.test(lower)) score += 1;
+  const matched = [];
+  for (const kw of keywords) {
+    if (lower.includes(kw.phrase)) {
+      const weight = getWordWeight(kw.phrase);
+      score += kw.points * weight;
+      matched.push(kw.phrase);
+    }
+  }
   let threshold = 4;
   threshold = await adjustScore('expansion', threshold);
-  return { triggered: score >= threshold, score: score, threshold: threshold };
+  return { triggered: score >= threshold, score, threshold, matchedWords: matched };
 }
 
 async function detectRebranding(text) {
   const lower = text.toLowerCase();
+  const keywords = [
+    { phrase: 'rebrand', points: 2 },
+    { phrase: 'new look', points: 2 },
+    { phrase: 'new name', points: 2 },
+    { phrase: 'new logo', points: 2 },
+    { phrase: 'new identity', points: 2 },
+    { phrase: 'refreshed brand', points: 2 },
+    { phrase: 'refreshed logo', points: 2 },
+    { phrase: 'refreshed website', points: 2 },
+    { phrase: 'we are now called', points: 3 },
+    { phrase: 'formerly known as', points: 3 },
+    { phrase: 'introducing our new name', points: 3 },
+    { phrase: 'introducing our new logo', points: 3 },
+  ];
   let score = 0;
-  if (/\b(rebr?and|new (look|name|logo|identity)|refresh(ed)? (brand|logo|website))\b/i.test(lower)) score += 2;
-  if (/\b(we are (now )?called|formerly known as|introducing our new (name|logo))\b/i.test(lower)) score += 3;
+  const matched = [];
+  for (const kw of keywords) {
+    if (lower.includes(kw.phrase)) {
+      const weight = getWordWeight(kw.phrase);
+      score += kw.points * weight;
+      matched.push(kw.phrase);
+    }
+  }
   let threshold = 4;
   threshold = await adjustScore('rebranding', threshold);
-  return { triggered: score >= threshold, score: score, threshold: threshold };
+  return { triggered: score >= threshold, score, threshold, matchedWords: matched };
 }
 
 async function detectLeadershipChange(text) {
   const lower = text.toLowerCase();
+  const keywords = [
+    { phrase: 'new ceo', points: 3 },
+    { phrase: 'new cto', points: 3 },
+    { phrase: 'new cfo', points: 3 },
+    { phrase: 'new coo', points: 3 },
+    { phrase: 'new vp', points: 3 },
+    { phrase: 'new director', points: 3 },
+    { phrase: 'new head of', points: 3 },
+    { phrase: 'appointed', points: 3 },
+    { phrase: 'hired as', points: 3 },
+    { phrase: 'joined as', points: 2 },
+    { phrase: 'takes over as', points: 2 },
+    { phrase: 'promoted to', points: 2 },
+  ];
   let score = 0;
-  if (/\b(new (ceo|cto|cfo|coo|vp|director|head of)|appointed (ceo|cto|cfo)|hired as (ceo|cto|cfo))\b/i.test(lower)) score += 3;
-  if (/\b(joined as|takes over as|promoted to)\b/i.test(lower)) score += 2;
+  const matched = [];
+  for (const kw of keywords) {
+    if (lower.includes(kw.phrase)) {
+      const weight = getWordWeight(kw.phrase);
+      score += kw.points * weight;
+      matched.push(kw.phrase);
+    }
+  }
   let threshold = 5;
   threshold = await adjustScore('leadership', threshold);
-  return { triggered: score >= threshold, score: score, threshold: threshold };
+  return { triggered: score >= threshold, score, threshold, matchedWords: matched };
 }
 
 async function getSignalsFromText(text, oldText = null) {
@@ -172,12 +342,19 @@ async function getSignalsFromText(text, oldText = null) {
   const results = [];
   for (const { type, fn } of detectors) {
     const res = await fn(analysisText);
-    if (res.triggered) results.push({ type: type, score: res.score, threshold: res.threshold });
+    if (res.triggered) {
+      results.push({
+        type: type,
+        score: res.score,
+        threshold: res.threshold,
+        matchedWords: res.matchedWords
+      });
+    }
   }
   return results;
 }
 
-// ---------- HIRING SURGE CHECK ----------
+// ---------- HIRING SURGE CHECK (numeric, unchanged) ----------
 async function checkHiringSurge(pageId) {
   const { data: snapshots } = await supabase
     .from('page_snapshots')
@@ -207,7 +384,10 @@ async function hasRecentSignal(leadId) {
 
 // ---------- MAIN ----------
 async function generateSignals() {
-  console.log('Generating signals (gentle learning, diagnostic logs)...');
+  console.log('Generating signals with per-word learning...');
+
+  // Load word weights at start
+  await loadWordWeights();
 
   const { data: latestRun } = await supabase
     .from('scan_runs')
@@ -241,20 +421,22 @@ async function generateSignals() {
 
   const companySignalsMap = new Map();
 
-  function addSignalToCompany(companyId, companyName, websiteUrl, type, detail, sourceObj) {
+  function addSignalToCompany(companyId, companyName, websiteUrl, type, detail, sourceObj, words) {
     if (!companySignalsMap.has(companyId)) {
       companySignalsMap.set(companyId, {
         companyName,
         websiteUrl,
         signalTypes: new Set(),
         details: [],
-        sources: []
+        sources: [],
+        triggeredWords: new Set()
       });
     }
     const entry = companySignalsMap.get(companyId);
     entry.signalTypes.add(type);
     if (detail) entry.details.push(detail);
     if (sourceObj) entry.sources.push(sourceObj);
+    if (words) words.forEach(w => entry.triggeredWords.add(w));
   }
 
   // ------- Process website changes -------
@@ -295,7 +477,9 @@ async function generateSignals() {
           const before = snapshots?.[1]?.job_count || 0;
           addSignalToCompany(page.company_id, company.company_name, company.website_url,
             'hiring', `Job openings increased from ${before} to ${now}.`,
-            { label: 'Careers page', url: page.page_url });
+            { label: 'Careers page', url: page.page_url },
+            ['hiring_surge']  // special word for numeric surge
+          );
           console.log('    ✅ Hiring surge.');
         }
       }
@@ -309,15 +493,13 @@ async function generateSignals() {
         .limit(2);
 
       if (!snapshots || snapshots.length < 2) {
-        console.log(`    Not enough snapshots (${snapshots?.length || 0}), skipping.`);
+        console.log(`    Not enough snapshots, skipping.`);
         await supabase.from('company_pages').update({ signals_generated: true }).eq('id', page.id);
         continue;
       }
 
       const currentText = snapshots[0].cleaned_text || '';
       const previousText = snapshots[1].cleaned_text || '';
-      console.log(`    Previous text length: ${previousText.length}, current: ${currentText.length}`);
-
       const textResults = await getSignalsFromText(currentText, previousText);
       if (textResults.length === 0) {
         console.log('    No text signals detected.');
@@ -339,7 +521,6 @@ async function generateSignals() {
         continue;
       }
 
-      // For homepage, still require at least 2 signal types (to avoid noise)
       if (page.page_type === 'homepage' && textResults.length < 2) {
         console.log('    Homepage with only one signal type, skipping.');
         await supabase.from('company_pages').update({ signals_generated: true }).eq('id', page.id);
@@ -350,7 +531,8 @@ async function generateSignals() {
       textResults.forEach(s => addSignalToCompany(
         page.company_id, company.company_name, company.website_url,
         s.type, snippet,
-        { label: `${page.page_type}: ${page.page_url}`, url: page.page_url }
+        { label: `${page.page_type}: ${page.page_url}`, url: page.page_url },
+        s.matchedWords
       ));
       console.log('    ✅ Signals added.');
 
@@ -394,7 +576,8 @@ async function generateSignals() {
       textResults.forEach(s => addSignalToCompany(
         news.company_id, company.company_name, company.website_url,
         s.type, snippet,
-        { label: `News: ${news.title}`, url: news.article_url }
+        { label: `News: ${news.title}`, url: news.article_url },
+        s.matchedWords
       ));
       console.log('    ✅ Signals added from news.');
     }
@@ -418,6 +601,7 @@ async function generateSignals() {
     const description = `Signals detected: ${signalTypes.join(', ')}`;
     const signalDetail = data.details.join(' | ') || description;
     const sourceUrls = data.sources;
+    const triggeredWords = [...data.triggeredWords];
 
     for (const lead of leads) {
       if (await hasRecentSignal(lead.id)) {
@@ -433,6 +617,7 @@ async function generateSignals() {
         signal_detail: signalDetail,
         source_url: data.websiteUrl,
         source_urls: sourceUrls,
+        triggered_words: triggeredWords,
         email_status: 'pending',
         email_subject: `Update: ${data.companyName}`,
         scan_run_id: scanRunId
@@ -441,7 +626,7 @@ async function generateSignals() {
       if (insertError) {
         console.error(`  Error inserting signal: ${insertError.message}`);
       } else {
-        console.log(`  ✅ Signal created for lead ${lead.id}`);
+        console.log(`  ✅ Signal created for lead ${lead.id} (words: ${triggeredWords.join(', ')})`);
       }
     }
   }
