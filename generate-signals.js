@@ -350,7 +350,7 @@ async function generateSignals() {
 
     const description = `Signals detected: ${signalTypes.join(', ')}`;
     const signalDetail = data.details.join(' | ') || description;
-    const sourceUrls = data.sources; // array of {label, url}
+    const sourceUrls = data.sources;
 
     for (const lead of leads) {
       if (await hasRecentSignal(lead.id)) continue;
@@ -369,7 +369,7 @@ async function generateSignals() {
       });
 
       if (insertError) {
-        console.error(`  Error inserting signal: ${insertError.message}`);
+        console.error(`  Error inserting signal for lead ${lead.id}: ${insertError.message}`);
       } else {
         console.log(`  Created signal for lead ${lead.id}: ${description} (${sourceUrls.length} sources)`);
       }
@@ -385,4 +385,4 @@ async function generateSignals() {
   console.log('Signal generation complete.');
 }
 
-generateSignals().catch(console.error);
+generateSignals().catch(console.error); 
