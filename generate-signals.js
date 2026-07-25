@@ -195,8 +195,9 @@ async function hasRecentSignal(leadId) {
 
 // ---------- MAIN ----------
 async function generateSignals() {
-  console.log('Generating signals from websites and news (with confidence filter & source tracking)...');
+  console.log('Generating signals (simplified queries)...');
 
+  // Latest scan run
   const { data: latestRun } = await supabase
     .from('scan_runs')
     .select('id')
@@ -209,28 +210,28 @@ async function generateSignals() {
     return;
   }
 
-  // ----- Website changes -----
-  const { data: changedPages, error: pagesError } = await supabase
+  // ----- 1. Changed pages (without join) -----
+  const { data: changedPages, error: pagesErr } = await supabase
     .from('company_pages')
-    .select(`id, page_url, page_type, company_id, companies!inner(company_name, website_url)`)
+    .select('id, page_url, page_type, company_id')
     .eq('last_status', 'changed')
     .eq('signals_generated', false);
 
-  if (pagesError) console.error('Error fetching changed pages:', pagesError.message);
+  if (pagesErr) console.error('Error fetching changed pages:', pagesErr.message);
+  else console.log(`Found ${changedPages?.length || 0} changed pages.`);
 
-  // ----- News articles (SIMPLE QUERY, no join) -----
-  const { data: newsEntries, error: newsError } = await supabase
+  // ----- 2. Pending news articles (no join) -----
+  const { data: newsEntries, error: newsErr } = await supabase
     .from('pending_news_signals')
     .select('id, company_id, article_url, title, snippet, pub_date');
 
-  if (newsError) {
-    console.error('Error fetching pending news:', newsError.message);
-  } else {
-    console.log(`Found ${newsEntries ? newsEntries.length : 0} pending news articles.`);
-  }
+  if (newsErr) console.error('Error fetching pending news:', newsErr.message);
+  else console.log(`Found ${newsEntries?.length || 0} pending news articles.`);
 
+  // Map: company_id -> { companyName, websiteUrl, signalTypes: Set, details: [], sources: [] }
   const companySignalsMap = new Map();
 
+  // Helper
   function addSignalToCompany(companyId, companyName, websiteUrl, type, detail, sourceObj) {
     if (!companySignalsMap.has(companyId)) {
       companySignalsMap.set(companyId, {
@@ -247,10 +248,22 @@ async function generateSignals() {
     if (sourceObj) entry.sources.push(sourceObj);
   }
 
-  // Process website changes
-  if (changedPages) {
+  // ------- Process website changes -------
+  if (changedPages && changedPages.length > 0) {
     for (const page of changedPages) {
-      // Hiring surge
+      // Fetch company info separately
+      const { data: company } = await supabase
+        .from('companies')
+        .select('company_name, website_url')
+        .eq('id', page.company_id)
+        .single();
+      if (!company) {
+        console.log(`  Company not found for page ${page.page_url}, skipping.`);
+        await supabase.from('company_pages').update({ signals_generated: true }).eq('id', page.id);
+        continue;
+      }
+
+      // Hiring surge (only careers)
       if (page.page_type === 'careers') {
         if (await checkHiringSurge(page.id)) {
           const { data: snapshots } = await supabase
@@ -261,12 +274,13 @@ async function generateSignals() {
             .limit(2);
           const now = snapshots?.[0]?.job_count || 0;
           const before = snapshots?.[1]?.job_count || 0;
-          addSignalToCompany(page.company_id, page.companies.company_name, page.companies.website_url,
+          addSignalToCompany(page.company_id, company.company_name, company.website_url,
             'hiring', `Job openings increased from ${before} to ${now}.`,
             { label: 'Careers page', url: page.page_url });
         }
       }
 
+      // Text signals only for allowed page types
       const allowedTypes = ['blog', 'news', 'press', 'homepage'];
       if (!allowedTypes.includes(page.page_type)) {
         await supabase.from('company_pages').update({ signals_generated: true }).eq('id', page.id);
@@ -310,7 +324,7 @@ async function generateSignals() {
 
       const snippet = extractSnippet(currentText, textResults.map(s => s.type));
       textResults.forEach(s => addSignalToCompany(
-        page.company_id, page.companies.company_name, page.companies.website_url,
+        page.company_id, company.company_name, company.website_url,
         s.type, snippet,
         { label: `${page.page_type}: ${page.page_url}`, url: page.page_url }
       ));
@@ -319,7 +333,7 @@ async function generateSignals() {
     }
   }
 
-  // Process news articles
+  // ------- Process news articles -------
   if (newsEntries && newsEntries.length > 0) {
     for (const news of newsEntries) {
       const { data: company } = await supabase
@@ -329,7 +343,7 @@ async function generateSignals() {
         .single();
 
       if (!company) {
-        console.log(`  Company not found for news ID ${news.id}, skipping.`);
+        console.log(`  Company not found for news ${news.article_url}, skipping.`);
         continue;
       }
 
@@ -356,7 +370,7 @@ async function generateSignals() {
     }
   }
 
-  // ---------- 3. Create grouped signals ----------
+  // ------- Create grouped signals -------
   for (const [companyId, data] of companySignalsMap.entries()) {
     const signalTypes = [...data.signalTypes];
     if (signalTypes.length === 0) continue;
@@ -396,7 +410,7 @@ async function generateSignals() {
     }
   }
 
-  // Delete processed news articles
+  // Delete processed news
   if (newsEntries && newsEntries.length > 0) {
     const idsToDelete = newsEntries.map(n => n.id);
     await supabase.from('pending_news_signals').delete().in('id', idsToDelete);
@@ -405,4 +419,7 @@ async function generateSignals() {
   console.log('Signal generation complete.');
 }
 
-generateSignals().catch(console.error);
+generateSignals().catch(err => {
+  console.error('Fatal error in generateSignals:', err);
+  process.exit(1);
+});
