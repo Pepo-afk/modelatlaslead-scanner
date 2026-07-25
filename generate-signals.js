@@ -209,19 +209,26 @@ async function generateSignals() {
     return;
   }
 
-  // ---------- 1. Website signals ----------
+  // ----- Website changes -----
   const { data: changedPages, error: pagesError } = await supabase
     .from('company_pages')
     .select(`id, page_url, page_type, company_id, companies!inner(company_name, website_url)`)
     .eq('last_status', 'changed')
     .eq('signals_generated', false);
 
-  // ---------- 2. News signals ----------
+  if (pagesError) console.error('Error fetching changed pages:', pagesError.message);
+
+  // ----- News articles (SIMPLE QUERY, no join) -----
   const { data: newsEntries, error: newsError } = await supabase
     .from('pending_news_signals')
-    .select('id, company_id, article_url, title, snippet, pub_date, companies!inner(company_name, website_url)');
+    .select('id, company_id, article_url, title, snippet, pub_date');
 
-  // Map: company_id -> { companyName, websiteUrl, signalTypes: Set, details: [], sources: [] }
+  if (newsError) {
+    console.error('Error fetching pending news:', newsError.message);
+  } else {
+    console.log(`Found ${newsEntries ? newsEntries.length : 0} pending news articles.`);
+  }
+
   const companySignalsMap = new Map();
 
   function addSignalToCompany(companyId, companyName, websiteUrl, type, detail, sourceObj) {
@@ -313,8 +320,19 @@ async function generateSignals() {
   }
 
   // Process news articles
-  if (newsEntries) {
+  if (newsEntries && newsEntries.length > 0) {
     for (const news of newsEntries) {
+      const { data: company } = await supabase
+        .from('companies')
+        .select('company_name, website_url')
+        .eq('id', news.company_id)
+        .single();
+
+      if (!company) {
+        console.log(`  Company not found for news ID ${news.id}, skipping.`);
+        continue;
+      }
+
       const text = `${news.title} ${news.snippet}`;
       const textResults = await getSignalsFromText(text, null);
       if (textResults.length === 0) continue;
@@ -325,11 +343,13 @@ async function generateSignals() {
       if (avgRatio >= 1.5) confidence = 'high';
       else if (avgRatio >= 1.0) confidence = 'medium';
 
+      console.log(`  News confidence: ${confidence} for "${news.title.substring(0, 60)}..."`);
+
       if (confidence === 'low') continue;
 
       const snippet = extractSnippet(text, textResults.map(s => s.type));
       textResults.forEach(s => addSignalToCompany(
-        news.company_id, news.companies.company_name, news.companies.website_url,
+        news.company_id, company.company_name, company.website_url,
         s.type, snippet,
         { label: `News: ${news.title}`, url: news.article_url }
       ));
@@ -385,4 +405,4 @@ async function generateSignals() {
   console.log('Signal generation complete.');
 }
 
-generateSignals().catch(console.error); 
+generateSignals().catch(console.error);
