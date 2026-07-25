@@ -65,7 +65,6 @@ async function scanCompanyNews(company) {
     const title = item.title || '';
     const snippet = item.contentSnippet || item.content || '';
 
-    // Relevance: company name must appear as whole word
     const combinedText = `${title} ${snippet}`.toLowerCase();
     const companyNameLower = company.company_name.toLowerCase();
     const namePattern = new RegExp(`\\b${companyNameLower}\\b`, 'i');
@@ -75,7 +74,7 @@ async function scanCompanyNews(company) {
       continue;
     }
 
-    // Store for signal generation
+    console.log(`    Trying to insert article: ${link}`);
     const { error: insertErr } = await supabase.from('pending_news_signals').insert({
       company_id: company.id,
       article_url: link,
