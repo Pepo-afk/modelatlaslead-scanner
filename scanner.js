@@ -246,6 +246,7 @@ async function main() {
 
   let companiesScanned = 0, pagesScanned = 0, errors = 0;
   for (const company of companies) {
+    console.log(`Scanning ${company.company_name} (${company.website_url})...`);
     try {
       await scanCompany(company, scanRunId);
       companiesScanned++;
