@@ -15,9 +15,9 @@ jobs:
         with:
           node-version: '24'
 
-      - run: npm install axios cheerio @supabase/supabase-js rss-parser 
+      - run: npm install axios cheerio @supabase/supabase-js rss-parser
 
-      # 1. Scan company websites (fast, no junk)
+      # 1. Scan company websites
       - name: Run Web Scanner
         run: node scanner.js
         env:
@@ -31,12 +31,13 @@ jobs:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
 
-      # 3. Generate signals (websites + news, with confidence & learning)
+      # 3. Generate signals (hybrid: keyword + AI)
       - name: Generate Signals
         run: node generate-signals.js
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          SERVER_API_KEY: ${{ secrets.SERVER_API_KEY }}
 
       # 4. Send emails for pending signals
       - name: Send Emails
