@@ -22,7 +22,6 @@ async function loadWordWeights() {
   }
   wordWeights.clear();
   for (const row of data || []) {
-    // User feedback counts 3x, AI feedback counts 1x
     const totalUser = row.good + row.bad;
     const totalAI = (row.ai_good || 0) + (row.ai_bad || 0);
     const weightedGood = (row.good * 3) + (row.ai_good || 0);
@@ -50,15 +49,182 @@ function getAddedText(oldText, newText) {
 }
 
 // ---------- KEYWORD DETECTION FUNCTIONS (per-word weighted) ----------
-async function detectFunding(text) { /* ... same as before, using getWordWeight ... */ }
-async function detectHiringSurgeText(text) { /* ... */ }
-async function detectProductLaunch(text) { /* ... */ }
-async function detectPartnership(text) { /* ... */ }
-async function detectExpansion(text) { /* ... */ }
-async function detectRebranding(text) { /* ... */ }
-async function detectLeadershipChange(text) { /* ... */ }
+async function detectFunding(text) {
+  const lower = text.toLowerCase();
+  const keywords = [
+    { phrase: 'announced', points: 2 }, { phrase: 'closes', points: 2 }, { phrase: 'closed', points: 2 },
+    { phrase: 'raises', points: 2 }, { phrase: 'raised', points: 2 }, { phrase: 'secures', points: 2 },
+    { phrase: 'secured', points: 2 }, { phrase: 'just raised', points: 3 }, { phrase: 'today announces', points: 3 },
+    { phrase: 'announced today', points: 3 },
+  ];
+  let score = 0;
+  const matched = [];
+  for (const kw of keywords) {
+    if (lower.includes(kw.phrase)) {
+      const weight = getWordWeight(kw.phrase);
+      score += kw.points * weight;
+      matched.push(kw.phrase);
+    }
+  }
+  const hasAmount = /\$\d+[mMkKbB]?|\d+\s?(million|billion)/i.test(lower);
+  if (hasAmount) { score += 3; matched.push('AMOUNT_PATTERN'); }
+  if (/\b(today|yesterday|this week|this month)\b/i.test(lower)) score += 1;
+  const currentYear = new Date().getFullYear();
+  const yearMatch = lower.match(/\b(20\d{2})\b/g);
+  if (yearMatch) {
+    const recentYears = yearMatch.filter(y => parseInt(y) >= currentYear - 1);
+    if (recentYears.length === 0 && yearMatch.length > 0) score -= 3;
+  }
+  const threshold = 5;
+  return { triggered: score >= threshold, score, threshold, matchedWords: matched };
+}
 
-// (In the final answer I'll include the full detection functions again, but to save space I'll note that they are identical to the last version you had. In the actual response I'll paste the complete file.)
+async function detectHiringSurgeText(text) {
+  const lower = text.toLowerCase();
+  const keywords = [
+    { phrase: "we're hiring", points: 3 }, { phrase: 'we are hiring', points: 3 },
+    { phrase: 'now hiring', points: 3 }, { phrase: 'expanding our team', points: 3 },
+    { phrase: 'expanding the team', points: 3 }, { phrase: 'join our team', points: 3 },
+    { phrase: 'join the team', points: 3 }, { phrase: 'multiple openings', points: 3 },
+    { phrase: 'hiring spree', points: 3 }, { phrase: 'new position', points: 1 },
+    { phrase: 'additional position', points: 1 }, { phrase: 'new role', points: 1 },
+    { phrase: 'additional role', points: 1 }, { phrase: 'growing our team', points: 2 },
+    { phrase: 'growing the team', points: 2 },
+  ];
+  let score = 0;
+  const matched = [];
+  for (const kw of keywords) {
+    if (lower.includes(kw.phrase)) {
+      const weight = getWordWeight(kw.phrase);
+      score += kw.points * weight;
+      matched.push(kw.phrase);
+    }
+  }
+  if (lower.includes('careers') && !/\b(hiring|join|apply|openings)\b/i.test(lower)) score -= 1;
+  const threshold = 3;
+  return { triggered: score >= threshold, score, threshold, matchedWords: matched };
+}
+
+async function detectProductLaunch(text) {
+  const lower = text.toLowerCase();
+  const keywords = [
+    { phrase: 'introducing', points: 2 }, { phrase: 'announcing', points: 2 },
+    { phrase: 'unveil', points: 2 }, { phrase: 'launch', points: 2 },
+    { phrase: 'launched', points: 2 }, { phrase: 'launches', points: 2 },
+    { phrase: 'launching', points: 2 }, { phrase: 'now available', points: 2 },
+    { phrase: 'new product', points: 3 }, { phrase: 'new feature', points: 3 },
+    { phrase: 'new platform', points: 3 }, { phrase: 'new tool', points: 3 },
+    { phrase: 'new app', points: 3 }, { phrase: 'new dashboard', points: 3 },
+    { phrase: 'new API', points: 3 }, { phrase: 'released', points: 2 },
+    { phrase: 'shipped', points: 2 }, { phrase: 'deployed', points: 2 },
+    { phrase: 'rolled out', points: 2 },
+  ];
+  let score = 0;
+  const matched = [];
+  for (const kw of keywords) {
+    if (lower.includes(kw.phrase)) {
+      const weight = getWordWeight(kw.phrase);
+      score += kw.points * weight;
+      matched.push(kw.phrase);
+    }
+  }
+  if (/\blaunching soon\b/i.test(lower)) score -= 1;
+  const threshold = 5;
+  return { triggered: score >= threshold, score, threshold, matchedWords: matched };
+}
+
+async function detectPartnership(text) {
+  const lower = text.toLowerCase();
+  const keywords = [
+    { phrase: 'partnership', points: 2 }, { phrase: 'partnering', points: 2 },
+    { phrase: 'partners with', points: 2 }, { phrase: 'partner with', points: 2 },
+    { phrase: 'integrates with', points: 2 }, { phrase: 'integrating with', points: 2 },
+    { phrase: 'integrated with', points: 2 }, { phrase: 'collaborates with', points: 2 },
+    { phrase: 'collaborating with', points: 2 }, { phrase: 'collaborated with', points: 2 },
+    { phrase: 'alliance with', points: 2 }, { phrase: 'together with', points: 1 },
+    { phrase: 'teaming up', points: 1 },
+  ];
+  let score = 0;
+  const matched = [];
+  for (const kw of keywords) {
+    if (lower.includes(kw.phrase)) {
+      const weight = getWordWeight(kw.phrase);
+      score += kw.points * weight;
+      matched.push(kw.phrase);
+    }
+  }
+  const threshold = 3;
+  return { triggered: score >= threshold, score, threshold, matchedWords: matched };
+}
+
+async function detectExpansion(text) {
+  const lower = text.toLowerCase();
+  const keywords = [
+    { phrase: 'new office', points: 2 }, { phrase: 'new location', points: 2 },
+    { phrase: 'new city', points: 2 }, { phrase: 'new country', points: 2 },
+    { phrase: 'new region', points: 2 }, { phrase: 'expanding to', points: 2 },
+    { phrase: 'expanding into', points: 2 }, { phrase: 'now in', points: 2 },
+    { phrase: 'global expansion', points: 2 }, { phrase: 'opening an office', points: 2 },
+    { phrase: 'opening a office', points: 2 },
+  ];
+  let score = 0;
+  const matched = [];
+  for (const kw of keywords) {
+    if (lower.includes(kw.phrase)) {
+      const weight = getWordWeight(kw.phrase);
+      score += kw.points * weight;
+      matched.push(kw.phrase);
+    }
+  }
+  const threshold = 4;
+  return { triggered: score >= threshold, score, threshold, matchedWords: matched };
+}
+
+async function detectRebranding(text) {
+  const lower = text.toLowerCase();
+  const keywords = [
+    { phrase: 'rebrand', points: 2 }, { phrase: 'new look', points: 2 },
+    { phrase: 'new name', points: 2 }, { phrase: 'new logo', points: 2 },
+    { phrase: 'new identity', points: 2 }, { phrase: 'refreshed brand', points: 2 },
+    { phrase: 'refreshed logo', points: 2 }, { phrase: 'refreshed website', points: 2 },
+    { phrase: 'we are now called', points: 3 }, { phrase: 'formerly known as', points: 3 },
+    { phrase: 'introducing our new name', points: 3 }, { phrase: 'introducing our new logo', points: 3 },
+  ];
+  let score = 0;
+  const matched = [];
+  for (const kw of keywords) {
+    if (lower.includes(kw.phrase)) {
+      const weight = getWordWeight(kw.phrase);
+      score += kw.points * weight;
+      matched.push(kw.phrase);
+    }
+  }
+  const threshold = 4;
+  return { triggered: score >= threshold, score, threshold, matchedWords: matched };
+}
+
+async function detectLeadershipChange(text) {
+  const lower = text.toLowerCase();
+  const keywords = [
+    { phrase: 'new ceo', points: 3 }, { phrase: 'new cto', points: 3 },
+    { phrase: 'new cfo', points: 3 }, { phrase: 'new coo', points: 3 },
+    { phrase: 'new vp', points: 3 }, { phrase: 'new director', points: 3 },
+    { phrase: 'new head of', points: 3 }, { phrase: 'appointed', points: 3 },
+    { phrase: 'hired as', points: 3 }, { phrase: 'joined as', points: 2 },
+    { phrase: 'takes over as', points: 2 }, { phrase: 'promoted to', points: 2 },
+  ];
+  let score = 0;
+  const matched = [];
+  for (const kw of keywords) {
+    if (lower.includes(kw.phrase)) {
+      const weight = getWordWeight(kw.phrase);
+      score += kw.points * weight;
+      matched.push(kw.phrase);
+    }
+  }
+  const threshold = 5;
+  return { triggered: score >= threshold, score, threshold, matchedWords: matched };
+}
 
 async function getSignalsFromTextKeyword(text, oldText = null) {
   const analysisText = oldText ? getAddedText(oldText, text) : text;
@@ -81,17 +247,57 @@ async function getSignalsFromTextKeyword(text, oldText = null) {
 }
 
 // ---------- HIRING SURGE (numeric) ----------
-async function checkHiringSurge(pageId) { /* unchanged */ }
+async function checkHiringSurge(pageId) {
+  const { data: snapshots } = await supabase
+    .from('page_snapshots')
+    .select('job_count, fetched_at')
+    .eq('company_page_id', pageId)
+    .order('fetched_at', { ascending: false })
+    .limit(2);
+  if (!snapshots || snapshots.length < 2) return false;
+  const prev = snapshots[1].job_count;
+  const curr = snapshots[0].job_count;
+  return (prev !== null && curr !== null && (curr - prev) >= 5);
+}
 
 // ---------- MONTHLY CAP ----------
-async function hasRecentSignal(leadId) { /* unchanged */ }
+async function hasRecentSignal(leadId) {
+  if (process.env.DISABLE_CAP === 'true') return false;
+  const twentyDaysAgo = new Date();
+  twentyDaysAgo.setDate(twentyDaysAgo.getDate() - 20);
+  const { data } = await supabase
+    .from('signals')
+    .select('id')
+    .eq('lead_id', leadId)
+    .gte('detected_at', twentyDaysAgo.toISOString())
+    .limit(1);
+  return data && data.length > 0;
+}
 
 // ---------- BATCH AI CALL ----------
-async function batchDetectSignals(items) { /* unchanged */ }
+async function batchDetectSignals(items) {
+  try {
+    const resp = await fetch(AI_RELAY_URL, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${SERVER_API_KEY}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({ items })
+    });
+    if (!resp.ok) {
+      console.error('AI relay error:', await resp.text());
+      return null;
+    }
+    return await resp.json();
+  } catch (err) {
+    console.error('AI relay exception:', err.message);
+    return null;
+  }
+}
 
 // ---------- AI FEEDBACK LEARNING ----------
 async function applyAIFeedback(itemMeta, aiResult) {
-  // Build map of word adjustments: word -> { ai_good_increment, ai_bad_increment }
   const adjustments = new Map();
   function addAdjustment(word, field) {
     if (!adjustments.has(word)) adjustments.set(word, { ai_good: 0, ai_bad: 0 });
@@ -103,11 +309,9 @@ async function applyAIFeedback(itemMeta, aiResult) {
     if (!meta.keywordResults || meta.keywordResults.length === 0) continue;
     const aiSignals = (aiResult && aiResult[itemId]) ? aiResult[itemId].signals : [];
 
-    // For each keyword-detected type, decide if AI agreed
     for (const kwResult of meta.keywordResults) {
       const type = kwResult.type;
       const aiAgreed = aiSignals.includes(type);
-      // Get all words matched by this detection
       const words = kwResult.matchedWords || [];
       for (const word of words) {
         if (aiAgreed) addAdjustment(word, 'ai_good');
@@ -116,47 +320,24 @@ async function applyAIFeedback(itemMeta, aiResult) {
     }
   }
 
-  // Upsert adjustments into word_feedback
+  // Upsert adjustments into word_feedback using increment logic
   for (const [word, adj] of adjustments.entries()) {
+    const { data: existing } = await supabase
+      .from('word_feedback')
+      .select('good, bad, ai_good, ai_bad')
+      .eq('word', word)
+      .maybeSingle();
+
+    const row = existing || { good: 0, bad: 0, ai_good: 0, ai_bad: 0 };
     await supabase
       .from('word_feedback')
       .upsert({
         word,
-        good: 0,
-        bad: 0,
-        ai_good: adj.ai_good,
-        ai_bad: adj.ai_bad
-      }, { onConflict: 'word' })
-      .select('word')
-      .maybeSingle();
-
-    // Increment instead of replace by using raw SQL? Supabase upsert with onConflict can do increment via update option.
-    // We'll do a raw SQL approach to be safe:
-    await supabase.rpc('increment_ai_feedback', {
-      p_word: word,
-      p_ai_good: adj.ai_good,
-      p_ai_bad: adj.ai_bad
-    }).catch(() => {
-      // Fallback: if RPC doesn't exist, we can do two queries (get existing then update)
-      // For MVP, we can just update with increment logic using a simple approach:
-      supabase
-        .from('word_feedback')
-        .select('good, bad, ai_good, ai_bad')
-        .eq('word', word)
-        .single()
-        .then(({ data }) => {
-          const existing = data || { good: 0, bad: 0, ai_good: 0, ai_bad: 0 };
-          return supabase
-            .from('word_feedback')
-            .upsert({
-              word,
-              good: existing.good,
-              bad: existing.bad,
-              ai_good: (existing.ai_good || 0) + adj.ai_good,
-              ai_bad: (existing.ai_bad || 0) + adj.ai_bad
-            }, { onConflict: 'word' });
-        });
-    });
+        good: row.good,
+        bad: row.bad,
+        ai_good: (row.ai_good || 0) + adj.ai_good,
+        ai_bad: (row.ai_bad || 0) + adj.ai_bad
+      }, { onConflict: 'word' });
   }
   console.log(`AI feedback applied for ${adjustments.size} words.`);
 }
