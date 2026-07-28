@@ -8,6 +8,7 @@ const supabase = createClient(
 
 const SERVER_API_KEY = process.env.SERVER_API_KEY;
 const AI_RELAY_URL = 'https://modelatlas.net/api/detect-signals.php';
+const CHUNK_SIZE = 20;
 
 // ---------- WORD-LEVEL LEARNING DATA ----------
 let wordWeights = new Map();
@@ -274,26 +275,33 @@ async function hasRecentSignal(leadId) {
   return data && data.length > 0;
 }
 
-// ---------- BATCH AI CALL ----------
+// ---------- BATCH AI CALL (chunked) ----------
 async function batchDetectSignals(items) {
-  try {
-    const resp = await fetch(AI_RELAY_URL, {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${SERVER_API_KEY}`,
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({ items })
-    });
-    if (!resp.ok) {
-      console.error('AI relay error:', await resp.text());
+  let combinedResult = {};
+  for (let i = 0; i < items.length; i += CHUNK_SIZE) {
+    const chunk = items.slice(i, i + CHUNK_SIZE);
+    try {
+      const resp = await fetch(AI_RELAY_URL, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${SERVER_API_KEY}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({ items: chunk })
+      });
+      if (!resp.ok) {
+        const errText = await resp.text();
+        console.error(`AI relay error for chunk ${i}: ${errText}`);
+        return null;  // fallback to keyword
+      }
+      const chunkResult = await resp.json();
+      Object.assign(combinedResult, chunkResult);
+    } catch (err) {
+      console.error(`AI relay exception for chunk ${i}:`, err.message);
       return null;
     }
-    return await resp.json();
-  } catch (err) {
-    console.error('AI relay exception:', err.message);
-    return null;
   }
+  return combinedResult;
 }
 
 // ---------- AI FEEDBACK LEARNING ----------
@@ -320,7 +328,6 @@ async function applyAIFeedback(itemMeta, aiResult) {
     }
   }
 
-  // Upsert adjustments into word_feedback using increment logic
   for (const [word, adj] of adjustments.entries()) {
     const { data: existing } = await supabase
       .from('word_feedback')
@@ -344,7 +351,7 @@ async function applyAIFeedback(itemMeta, aiResult) {
 
 // ---------- MAIN ----------
 async function generateSignals() {
-  console.log('Generating signals (hybrid + AI feedback learning)...');
+  console.log('Generating signals (hybrid + AI feedback learning, chunked)...');
 
   await loadWordWeights();
 
@@ -428,14 +435,13 @@ async function generateSignals() {
     }
   }
 
-  // Batch AI call
+  // Batch AI call (chunked internally)
   let aiResult = null;
   if (aiItems.length > 0) {
     aiResult = await batchDetectSignals(aiItems);
     if (!aiResult) {
       console.log('Batch AI failed, falling back to keyword engine.');
     } else {
-      // AI succeeded → train keyword words with AI decisions
       await applyAIFeedback(itemMeta, aiResult);
     }
   }
