@@ -6,9 +6,8 @@ const supabase = createClient(
   { auth: { persistSession: false } }
 );
 
-const SERVER_API_KEY = process.env.SERVER_API_KEY;
-const AI_RELAY_URL = 'https://modelatlas.net/api/detect-signals.php';
-const CHUNK_SIZE = 20;
+const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY;
+const CHUNK_SIZE = 10;   // smaller chunks to avoid timeouts
 
 // ---------- WORD-LEVEL LEARNING DATA ----------
 let wordWeights = new Map();
@@ -275,33 +274,65 @@ async function hasRecentSignal(leadId) {
   return data && data.length > 0;
 }
 
-// ---------- BATCH AI CALL (chunked) ----------
+// ---------- DIRECT OPENROUTER CALL (chunked) ----------
+async function callOpenRouter(prompt) {
+  const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${OPENROUTER_API_KEY}`,
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({
+      model: 'google/gemma-4-26b-a4b-it:free',
+      messages: [{ role: 'user', content: prompt }],
+      max_tokens: 2000,
+      temperature: 0.1,
+      response_format: { type: 'json_object' }
+    }),
+    signal: AbortSignal.timeout(60000)   // 60 seconds timeout
+  });
+
+  if (!response.ok) {
+    const errText = await response.text();
+    throw new Error(`OpenRouter API error: ${response.status} ${errText}`);
+  }
+
+  const data = await response.json();
+  return data.choices[0].message.content;
+}
+
 async function batchDetectSignals(items) {
   let combinedResult = {};
   for (let i = 0; i < items.length; i += CHUNK_SIZE) {
     const chunk = items.slice(i, i + CHUNK_SIZE);
+    const prompt = buildBatchPrompt(chunk);
     try {
-      const resp = await fetch(AI_RELAY_URL, {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${SERVER_API_KEY}`,
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({ items: chunk })
-      });
-      if (!resp.ok) {
-        const errText = await resp.text();
-        console.error(`AI relay error for chunk ${i}: ${errText}`);
-        return null;  // fallback to keyword
-      }
-      const chunkResult = await resp.json();
+      const content = await callOpenRouter(prompt);
+      const chunkResult = JSON.parse(content);
       Object.assign(combinedResult, chunkResult);
     } catch (err) {
-      console.error(`AI relay exception for chunk ${i}:`, err.message);
-      return null;
+      console.error(`Chunk ${i} failed:`, err.message);
+      return null;   // fallback to keyword engine
     }
   }
   return combinedResult;
+}
+
+function buildBatchPrompt(items) {
+  let prompt = "You are an assistant that reads web page text and detects business signals a B2B salesperson would care about.\n\n";
+  prompt += "Signals: funding, hiring, launch, partnership, expansion, rebranding, leadership.\n";
+  prompt += "Below are multiple pieces of text, each with an ID. For each one, decide if it describes a specific, recent event matching any signal type. If so, list the signal types and a short explanation. If the text is just a menu, historical timeline, educational article, or boilerplate, return empty signals.\n\n";
+
+  for (const item of items) {
+    const id = item.id;
+    const type = item.type ?? 'page';
+    const text = item.text.substring(0, 1500);
+    prompt += `ID: ${id}\nType: ${type}\nText:\n${text}\n\n`;
+  }
+
+  prompt += "Return a JSON object where each key is an ID, and the value is an object with \"signals\" (array of strings) and \"explanation\" (string). If no signals, use empty array and empty string.\n";
+  prompt += "Only return the JSON object, no other text.";
+  return prompt;
 }
 
 // ---------- AI FEEDBACK LEARNING ----------
@@ -351,7 +382,7 @@ async function applyAIFeedback(itemMeta, aiResult) {
 
 // ---------- MAIN ----------
 async function generateSignals() {
-  console.log('Generating signals (hybrid + AI feedback learning, chunked)...');
+  console.log('Generating signals (direct AI call, no PHP relay)...');
 
   await loadWordWeights();
 
@@ -435,7 +466,7 @@ async function generateSignals() {
     }
   }
 
-  // Batch AI call (chunked internally)
+  // Batch AI call (direct, chunked)
   let aiResult = null;
   if (aiItems.length > 0) {
     aiResult = await batchDetectSignals(aiItems);
