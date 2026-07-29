@@ -37,8 +37,8 @@ jobs:
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
-          SERVER_API_KEY: ${{ secrets.SERVER_API_KEY }}
-          DISABLE_CAP: true          # ← temporary test line
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          DISABLE_CAP: true          # ← remove this line after testing
 
       # 4. Send emails for pending signals
       - name: Send Emails
@@ -46,4 +46,4 @@ jobs:
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
-          RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
+          RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }} 
