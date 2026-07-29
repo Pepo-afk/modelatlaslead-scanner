@@ -31,13 +31,14 @@ jobs:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
 
-      # 3. Generate signals (hybrid: keyword + AI)
+      # 3. Generate signals (hybrid: keyword + AI, cap disabled)
       - name: Generate Signals
         run: node generate-signals.js
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
           SERVER_API_KEY: ${{ secrets.SERVER_API_KEY }}
+          DISABLE_CAP: true          # ← temporary test line
 
       # 4. Send emails for pending signals
       - name: Send Emails
