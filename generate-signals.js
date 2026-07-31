@@ -7,7 +7,7 @@ const supabase = createClient(
 );
 
 const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY;
-const CHUNK_SIZE = 10;   // smaller chunks to avoid timeouts
+const CHUNK_SIZE = 10;   // items per AI request (small enough to avoid timeouts)
 
 // ---------- WORD-LEVEL LEARNING DATA ----------
 let wordWeights = new Map();
@@ -274,7 +274,7 @@ async function hasRecentSignal(leadId) {
   return data && data.length > 0;
 }
 
-// ---------- DIRECT OPENROUTER CALL (chunked) ----------
+// ---------- DIRECT OPENROUTER CALL (no timeout) ----------
 async function callOpenRouter(prompt) {
   const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
     method: 'POST',
@@ -288,8 +288,7 @@ async function callOpenRouter(prompt) {
       max_tokens: 2000,
       temperature: 0.1,
       response_format: { type: 'json_object' }
-    }),
-    signal: AbortSignal.timeout(60000)   // 60 seconds timeout
+    })
   });
 
   if (!response.ok) {
