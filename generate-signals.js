@@ -7,7 +7,7 @@ const supabase = createClient(
 );
 
 const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY;
-const CHUNK_SIZE = 10;   // items per AI request (small enough to avoid timeouts)
+const CHUNK_SIZE = 10;   // items per AI request
 
 // ---------- WORD-LEVEL LEARNING DATA ----------
 let wordWeights = new Map();
@@ -274,30 +274,45 @@ async function hasRecentSignal(leadId) {
   return data && data.length > 0;
 }
 
-// ---------- DIRECT OPENROUTER CALL (no timeout) ----------
-async function callOpenRouter(prompt) {
-  const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
-    method: 'POST',
-    headers: {
-      'Authorization': `Bearer ${OPENROUTER_API_KEY}`,
-      'Content-Type': 'application/json'
-    },
-    body: JSON.stringify({
-      model: 'google/gemma-4-26b-a4b-it:free',
-      messages: [{ role: 'user', content: prompt }],
-      max_tokens: 2000,
-      temperature: 0.1,
-      response_format: { type: 'json_object' }
-    })
-  });
+// ---------- DIRECT OPENROUTER CALL (with retry on 429) ----------
+async function callOpenRouter(prompt, retries = 3) {
+  for (let attempt = 1; attempt <= retries; attempt++) {
+    try {
+      const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${OPENROUTER_API_KEY}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          model: 'google/gemma-4-26b-a4b-it:free',
+          messages: [{ role: 'user', content: prompt }],
+          max_tokens: 2000,
+          temperature: 0.1,
+          response_format: { type: 'json_object' }
+        })
+      });
 
-  if (!response.ok) {
-    const errText = await response.text();
-    throw new Error(`OpenRouter API error: ${response.status} ${errText}`);
+      if (response.status === 429) {
+        console.warn(`  Rate limited (429) on attempt ${attempt}, retrying in 10s...`);
+        await new Promise(resolve => setTimeout(resolve, 10000));
+        continue;
+      }
+
+      if (!response.ok) {
+        const errText = await response.text();
+        throw new Error(`OpenRouter API error: ${response.status} ${errText}`);
+      }
+
+      const data = await response.json();
+      return data.choices[0].message.content;
+    } catch (err) {
+      if (attempt === retries) throw err;
+      console.warn(`  Request failed on attempt ${attempt}, retrying...`);
+      await new Promise(resolve => setTimeout(resolve, 5000));
+    }
   }
-
-  const data = await response.json();
-  return data.choices[0].message.content;
+  throw new Error('All retries exhausted');
 }
 
 async function batchDetectSignals(items) {
@@ -381,7 +396,7 @@ async function applyAIFeedback(itemMeta, aiResult) {
 
 // ---------- MAIN ----------
 async function generateSignals() {
-  console.log('Generating signals (direct AI call, no PHP relay)...');
+  console.log('Generating signals (direct AI call, retry on 429)...');
 
   await loadWordWeights();
 
@@ -465,7 +480,7 @@ async function generateSignals() {
     }
   }
 
-  // Batch AI call (direct, chunked)
+  // Batch AI call (direct, chunked, with retry)
   let aiResult = null;
   if (aiItems.length > 0) {
     aiResult = await batchDetectSignals(aiItems);
