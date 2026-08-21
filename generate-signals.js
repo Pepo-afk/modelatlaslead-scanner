@@ -285,7 +285,7 @@ async function callOpenRouter(prompt, retries = 3) {
           'Content-Type': 'application/json'
         },
         body: JSON.stringify({
-          model: 'google/gemma-4-26b-a4b-it:free',
+          model: 'openrouter/free',
           messages: [{ role: 'user', content: prompt }],
           max_tokens: 2000,
           temperature: 0.1,
