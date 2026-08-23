@@ -261,6 +261,7 @@ async function checkHiringSurge(pageId) {
 }
 
 // ---------- MONTHLY CAP ----------
+// Controlled entirely by DISABLE_CAP env var (unchanged behavior — no hardcoding here).
 async function hasRecentSignal(leadId) {
   if (process.env.DISABLE_CAP === 'true') return false;
   const twentyDaysAgo = new Date();
@@ -491,6 +492,21 @@ async function generateSignals() {
     }
   }
 
+  // ---- Batched company lookup (replaces one select-per-item) ----
+  const companyIds = new Set();
+  for (const meta of Object.values(itemMeta)) {
+    if (meta.type === 'page') companyIds.add(meta.page.company_id);
+    else if (meta.type === 'news') companyIds.add(meta.news.company_id);
+  }
+  const companyById = new Map();
+  if (companyIds.size > 0) {
+    const { data: companiesData } = await supabase
+      .from('companies')
+      .select('id, company_name, website_url')
+      .in('id', Array.from(companyIds));
+    for (const c of companiesData || []) companyById.set(c.id, c);
+  }
+
   const companySignalsMap = new Map();
 
   function addSignalToCompany(companyId, companyName, websiteUrl, type, explanation, sourceObj, words) {
@@ -515,11 +531,7 @@ async function generateSignals() {
   for (const [itemId, meta] of Object.entries(itemMeta)) {
     if (meta.type === 'page') {
       const page = meta.page;
-      const { data: company } = await supabase
-        .from('companies')
-        .select('company_name, website_url')
-        .eq('id', page.company_id)
-        .single();
+      const company = companyById.get(page.company_id);
       if (!company) continue;
 
       // Hiring surge (always added)
@@ -563,11 +575,7 @@ async function generateSignals() {
       await supabase.from('company_pages').update({ signals_generated: true }).eq('id', page.id);
     } else if (meta.type === 'news') {
       const news = meta.news;
-      const { data: company } = await supabase
-        .from('companies')
-        .select('company_name, website_url')
-        .eq('id', news.company_id)
-        .single();
+      const company = companyById.get(news.company_id);
       if (!company) continue;
 
       if (aiResult && aiResult[itemId]) {
