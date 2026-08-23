@@ -1,6 +1,8 @@
 const axios = require('axios');
 const cheerio = require('cheerio');
 const crypto = require('crypto');
+const http = require('http');
+const https = require('https');
 const { createClient } = require('@supabase/supabase-js');
 
 const supabase = createClient(
@@ -9,18 +11,22 @@ const supabase = createClient(
   { auth: { persistSession: false } }
 );
 
-const MAX_PAGES_PER_COMPANY = 8;
-const MAX_CONCURRENT_PAGES = 5;
-const FETCH_TIMEOUT_MS = 8000;
+// ---------- TUNABLES ----------
+const MAX_PAGES_PER_COMPANY = 3;        // careers, blog, press/news
+const COMPANY_CONCURRENCY = 18;         // companies processed in parallel
+const GLOBAL_HTTP_CONCURRENCY = 40;     // total concurrent HTTP requests across ALL companies
+const FETCH_TIMEOUT_MS = 5000;
 
 const USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
 
+// Homepage and "about" are intentionally NOT scanned for signals (too noisy/slow).
+// Homepage is still fetched once per company, but ONLY to harvest links.
 const PAGE_TYPE_KEYWORDS = {
-  blog: ['blog', 'news', 'articles', 'stories'],
-  careers: ['careers', 'jobs', 'work', 'team'],
-  press: ['press', 'media', 'newsroom'],
-  about: ['about', 'company', 'team'],
+  careers: ['careers', 'career', 'jobs', 'job-openings', 'join-us', 'work-with-us', 'join-our-team'],
+  blog: ['blog', 'insights', 'articles', 'stories', 'resources/blog'],
+  press: ['press', 'newsroom', 'media', 'news'],
 };
+const CATEGORY_ORDER = ['careers', 'blog', 'press']; // priority order when picking pages
 
 const URL_BLACKLIST = [
   'linkedin.com',
@@ -34,28 +40,60 @@ function isBlacklisted(url) {
   return URL_BLACKLIST.some(term => lower.includes(term));
 }
 
-function scoreLink(href, baseUrl) {
-  try {
-    const url = new URL(href, baseUrl);
-    if (url.hostname !== new URL(baseUrl).hostname) return -1;
-    const path = url.pathname.toLowerCase();
-    if (isBlacklisted(url.href)) return -1;
-    if (path === '/') return 90;
-    let score = 50;
-    for (const keywords of Object.values(PAGE_TYPE_KEYWORDS)) {
-      if (keywords.some(kw => path.includes(kw))) {
-        score += 30;
-        break;
-      }
+// ---------- SHARED HTTP CLIENT (keep-alive, reused across every request) ----------
+const httpAgent = new http.Agent({ keepAlive: true, maxSockets: GLOBAL_HTTP_CONCURRENCY });
+const httpsAgent = new https.Agent({ keepAlive: true, maxSockets: GLOBAL_HTTP_CONCURRENCY });
+
+const httpClient = axios.create({
+  timeout: FETCH_TIMEOUT_MS,
+  httpAgent,
+  httpsAgent,
+  maxRedirects: 5,
+  validateStatus: (status) => status < 500,
+  headers: {
+    'User-Agent': USER_AGENT,
+    'Accept-Language': 'en-US,en;q=0.9',
+  },
+});
+
+// ---------- GLOBAL SEMAPHORE (caps TOTAL concurrent HTTP requests across every company) ----------
+class Semaphore {
+  constructor(max) {
+    this.max = max;
+    this.current = 0;
+    this.queue = [];
+  }
+  acquire() {
+    if (this.current < this.max) {
+      this.current++;
+      return Promise.resolve();
     }
-    const depth = path.split('/').filter(Boolean).length;
-    score -= depth * 5;
-    return Math.max(score, 0);
-  } catch {
-    return -1;
+    return new Promise(resolve => this.queue.push(resolve));
+  }
+  release() {
+    this.current--;
+    if (this.queue.length > 0) {
+      this.current++;
+      const next = this.queue.shift();
+      next();
+    }
+  }
+}
+const httpSemaphore = new Semaphore(GLOBAL_HTTP_CONCURRENCY);
+
+async function fetchWithLimit(url, conditionalHeaders = {}) {
+  await httpSemaphore.acquire();
+  try {
+    const response = await httpClient.get(url, { headers: conditionalHeaders });
+    return response;
+  } catch (err) {
+    return null;
+  } finally {
+    httpSemaphore.release();
   }
 }
 
+// ---------- TEXT / HASH HELPERS ----------
 function extractVisibleText($) {
   $('script, style, nav, footer, header, noscript, iframe, svg, img, [aria-hidden="true"]').remove();
   return ($('body').text() || '').replace(/\s+/g, ' ').trim();
@@ -80,34 +118,58 @@ function countJobs(html) {
   return maxCount;
 }
 
-async function fetchPage(url) {
-  try {
-    const response = await axios.get(url, {
-      timeout: FETCH_TIMEOUT_MS,
-      headers: {
-        'User-Agent': USER_AGENT,
-        'Accept-Language': 'en-US,en;q=0.9',
-      },
-      maxRedirects: 5,
-      validateStatus: (status) => status < 500,
-    });
-    if (response.status === 403 || response.status === 404) return null;
-    return response;
-  } catch (err) {
-    return null;
+// ---------- LINK SCORING (Option B: homepage used only for link discovery, never stored/analyzed) ----------
+function scoreLinkForCategory(path, keywords) {
+  const lower = path.toLowerCase();
+  let best = -1;
+  for (const kw of keywords) {
+    if (lower.includes(kw)) {
+      const depth = lower.split('/').filter(Boolean).length;
+      const score = 100 - depth * 8 - (lower.indexOf(kw) > 3 ? 5 : 0);
+      if (score > best) best = score;
+    }
   }
+  return best;
 }
 
-function classifyPageType(url) {
-  const path = new URL(url).pathname.toLowerCase();
-  if (path === '/') return 'homepage';
-  for (const [type, keywords] of Object.entries(PAGE_TYPE_KEYWORDS)) {
-    if (keywords.some(kw => path.includes(kw))) return type;
+function pickCandidatePages(links, baseUrl) {
+  const hostname = new URL(baseUrl).hostname;
+  const bestByCategory = {}; // category -> { url, score }
+
+  for (const href of links) {
+    let url;
+    try {
+      url = new URL(href, baseUrl);
+    } catch {
+      continue;
+    }
+    if (url.hostname !== hostname) continue;
+    if (isBlacklisted(url.href)) continue;
+    const path = url.pathname;
+
+    for (const category of CATEGORY_ORDER) {
+      const score = scoreLinkForCategory(path, PAGE_TYPE_KEYWORDS[category]);
+      if (score < 0) continue;
+      if (!bestByCategory[category] || score > bestByCategory[category].score) {
+        bestByCategory[category] = { url: url.href, score };
+      }
+    }
   }
-  return 'other';
+
+  const selected = [];
+  const seenUrls = new Set();
+  for (const category of CATEGORY_ORDER) {
+    const pick = bestByCategory[category];
+    if (pick && !seenUrls.has(pick.url)) {
+      selected.push({ url: pick.url, pageType: category });
+      seenUrls.add(pick.url);
+    }
+    if (selected.length >= MAX_PAGES_PER_COMPANY) break;
+  }
+  return selected.slice(0, MAX_PAGES_PER_COMPANY);
 }
 
-// ---------- simple concurrency helper (no external packages) ----------
+// ---------- CONCURRENCY HELPER (company-level pool) ----------
 async function concurrentMap(items, limit, asyncFn) {
   let index = 0;
   const results = new Array(items.length);
@@ -117,115 +179,225 @@ async function concurrentMap(items, limit, asyncFn) {
       results[currentIdx] = await asyncFn(items[currentIdx]);
     }
   }
-  const workers = Array.from({ length: limit }, () => worker());
+  const workers = Array.from({ length: Math.min(limit, items.length) }, () => worker());
   await Promise.all(workers);
   return results;
 }
-// ------------------------------------------------------------------
 
+// ---------- PER-COMPANY SCAN ----------
 async function scanCompany(company, scanRunId) {
   let website = company.website_url;
-  if (!website || website.includes('linkedin.com')) return;
+  if (!website || website.toLowerCase().includes('linkedin.com')) return;
   if (!website.startsWith('http')) website = 'https://' + website;
 
-  const homeRes = await fetchPage(website);
-  if (!homeRes) return;
+  // 1. Homepage fetch — link discovery ONLY. Not stored, not analyzed for signals.
+  const homeRes = await fetchWithLimit(website);
+  if (!homeRes || homeRes.status >= 400 || !homeRes.data) return;
 
-  const $ = cheerio.load(homeRes.data);
-  const homepageLinks = [];
-  $('a[href]').each((i, el) => {
-    const href = $(el).attr('href');
-    if (href) homepageLinks.push(href);
-  });
+  let candidates;
+  try {
+    const $ = cheerio.load(homeRes.data);
+    const links = [];
+    $('a[href]').each((i, el) => {
+      const href = $(el).attr('href');
+      if (href) links.push(href);
+    });
+    candidates = pickCandidatePages(links, website);
+  } catch {
+    return;
+  }
 
-  const scored = homepageLinks
-    .map(href => ({ href, score: scoreLink(href, website) }))
-    .filter(link => link.score >= 0)
-    .sort((a, b) => b.score - a.score);
+  if (candidates.length === 0) return; // nothing worth scanning for this company
 
-  const uniqueUrls = new Set();
-  const selected = [new URL(website).href];
-  uniqueUrls.add(selected[0]);
-  for (const { href } of scored) {
-    const url = new URL(href, website).href;
-    if (!uniqueUrls.has(url)) {
-      uniqueUrls.add(url);
-      selected.push(url);
-      if (selected.length >= MAX_PAGES_PER_COMPANY) break;
+  // 2. Load existing active pages for this company (1 query)
+  const { data: existingPages } = await supabase
+    .from('company_pages')
+    .select('id, page_url, page_type, etag, last_modified')
+    .eq('company_id', company.id)
+    .eq('is_active', true);
+  const existingMap = new Map((existingPages || []).map(p => [p.page_url, p]));
+
+  // 3. Load latest snapshot hash/job_count for existing candidate pages (1 query)
+  const existingCandidateIds = candidates
+    .map(c => existingMap.get(c.url)?.id)
+    .filter(Boolean);
+
+  const latestSnapByPage = new Map();
+  if (existingCandidateIds.length > 0) {
+    const { data: snaps } = await supabase
+      .from('page_snapshots')
+      .select('company_page_id, text_hash, job_count, fetched_at')
+      .in('company_page_id', existingCandidateIds)
+      .order('fetched_at', { ascending: false });
+    for (const row of snaps || []) {
+      if (!latestSnapByPage.has(row.company_page_id)) {
+        latestSnapByPage.set(row.company_page_id, row);
+      }
     }
   }
 
-  // Fetch all selected pages concurrently (limited)
-  const pageResults = await concurrentMap(selected, MAX_CONCURRENT_PAGES, async (pageUrl) => {
-    const res = await fetchPage(pageUrl);
-    if (!res) return null;
+  // 4. Fetch each candidate page (conditional GET if we already have an etag/last-modified for it)
+  const fetchResults = await Promise.all(candidates.map(async (candidate) => {
+    const existing = existingMap.get(candidate.url);
+    const conditionalHeaders = {};
+    if (existing?.etag) conditionalHeaders['If-None-Match'] = existing.etag;
+    if (existing?.last_modified) conditionalHeaders['If-Modified-Since'] = existing.last_modified;
+
+    const res = await fetchWithLimit(candidate.url, conditionalHeaders);
+    if (!res) return { candidate, existing, status: 'error' };
+    if (res.status === 304) return { candidate, existing, status: 'not_modified' };
+    if (res.status >= 400 || !res.data) return { candidate, existing, status: 'error' };
+
     const $ = cheerio.load(res.data);
     const cleanedText = extractVisibleText($);
     const textHash = hashText(cleanedText);
-    const pageType = classifyPageType(pageUrl);
-    let jobCount = null;
-    if (pageType === 'careers') jobCount = countJobs(res.data);
-    return { pageUrl, pageType, cleanedText, textHash, jobCount };
-  });
+    const jobCount = candidate.pageType === 'careers' ? countJobs(res.data) : null;
+    const etag = res.headers?.etag || null;
+    const lastModified = res.headers?.['last-modified'] || null;
 
-  const { data: existingPages } = await supabase
-    .from('company_pages')
-    .select('id, page_url')
-    .eq('company_id', company.id)
-    .eq('is_active', true);
-  const existingMap = new Map(existingPages?.map(p => [p.page_url, p.id]) || []);
-  const scannedPageIds = [];
+    return { candidate, existing, status: 'fetched', cleanedText, textHash, jobCount, etag, lastModified };
+  }));
 
-  for (const result of pageResults) {
-    if (!result) continue;
-    const { pageUrl, pageType, cleanedText, textHash, jobCount } = result;
-    let pageId = existingMap.get(pageUrl);
-    if (!pageId) {
-      const { data: newPage } = await supabase
-        .from('company_pages')
-        .insert({ company_id: company.id, page_url: pageUrl, page_type: pageType, is_active: true, last_status: 'pending' })
-        .select('id')
-        .single();
-      pageId = newPage?.id;
+  // 5. Build batched writes
+  const newPageRows = [];
+  const pageUpsertRows = [];
+  const snapshotRows = [];
+  const seenPageUrls = new Set();
+
+  for (const result of fetchResults) {
+    const { candidate, existing, status } = result;
+    seenPageUrls.add(candidate.url);
+
+    if (status === 'error') {
+      // Transient failure: leave last_status alone so a previously "changed"
+      // page awaiting signal generation isn't silently cleared.
+      continue;
     }
-    if (!pageId) continue;
-    scannedPageIds.push(pageId);
 
-    const { data: lastSnap } = await supabase
-      .from('page_snapshots')
-      .select('text_hash')
-      .eq('company_page_id', pageId)
-      .order('fetched_at', { ascending: false })
-      .limit(1)
-      .maybeSingle();
+    if (status === 'not_modified') {
+      if (existing) {
+        pageUpsertRows.push({
+          id: existing.id,
+          company_id: company.id,
+          page_url: candidate.url,
+          page_type: candidate.pageType,
+          is_active: true,
+          last_scan_at: new Date().toISOString(),
+          last_status: 'ok',
+        });
+      }
+      continue;
+    }
 
-    let status = 'ok';
-    if (!lastSnap || lastSnap.text_hash !== textHash) status = 'changed';
+    // status === 'fetched'
+    const { cleanedText, textHash, jobCount, etag, lastModified } = result;
+    const prevSnap = existing ? latestSnapByPage.get(existing.id) : null;
+    const contentChanged = !prevSnap || prevSnap.text_hash !== textHash;
 
-    await supabase.from('page_snapshots').insert({
-      company_page_id: pageId,
-      scan_run_id: scanRunId,
-      cleaned_text: cleanedText,
-      text_hash: textHash,
-      job_count: jobCount,
-    });
-
-    await supabase.from('company_pages')
-      .update({ last_scan_at: new Date().toISOString(), last_status: status, signals_generated: false, job_count: jobCount })
-      .eq('id', pageId);
+    if (!existing) {
+      newPageRows.push({
+        company_id: company.id,
+        page_url: candidate.url,
+        page_type: candidate.pageType,
+        is_active: true,
+        last_status: 'pending',
+        _pendingSnapshot: { cleanedText, textHash, jobCount },
+        _pendingUpdate: { etag, lastModified, jobCount },
+      });
+    } else {
+      pageUpsertRows.push({
+        id: existing.id,
+        company_id: company.id,
+        page_url: candidate.url,
+        page_type: candidate.pageType,
+        is_active: true,
+        last_scan_at: new Date().toISOString(),
+        last_status: contentChanged ? 'changed' : 'ok',
+        signals_generated: contentChanged ? false : undefined,
+        job_count: jobCount,
+        etag,
+        last_modified: lastModified,
+      });
+      if (contentChanged) {
+        snapshotRows.push({
+          company_page_id: existing.id,
+          scan_run_id: scanRunId,
+          cleaned_text: cleanedText,
+          text_hash: textHash,
+          job_count: jobCount,
+        });
+      }
+    }
   }
 
-  for (const [url, pageId] of existingMap.entries()) {
-    if (!scannedPageIds.includes(pageId)) {
-      await supabase.from('company_pages')
-        .update({ last_status: 'disappeared', is_active: false })
-        .eq('id', pageId);
+  // 6. Insert brand-new pages, then wire up their generated ids for snapshot/update rows
+  if (newPageRows.length > 0) {
+    const insertPayload = newPageRows.map(({ _pendingSnapshot, _pendingUpdate, ...row }) => row);
+    const { data: inserted, error: insertErr } = await supabase
+      .from('company_pages')
+      .insert(insertPayload)
+      .select('id, page_url');
+
+    if (!insertErr && inserted) {
+      const idByUrl = new Map(inserted.map(r => [r.page_url, r.id]));
+      for (const row of newPageRows) {
+        const id = idByUrl.get(row.page_url);
+        if (!id) continue;
+        snapshotRows.push({
+          company_page_id: id,
+          scan_run_id: scanRunId,
+          cleaned_text: row._pendingSnapshot.cleanedText,
+          text_hash: row._pendingSnapshot.textHash,
+          job_count: row._pendingSnapshot.jobCount,
+        });
+        pageUpsertRows.push({
+          id,
+          company_id: company.id,
+          page_url: row.page_url,
+          page_type: row.page_type,
+          is_active: true,
+          last_scan_at: new Date().toISOString(),
+          last_status: 'changed', // first-ever snapshot: treat as changed so signals get generated
+          signals_generated: false,
+          job_count: row._pendingUpdate.jobCount,
+          etag: row._pendingUpdate.etag,
+          last_modified: row._pendingUpdate.lastModified,
+        });
+      }
     }
+  }
+
+  // 7. Pages that used to be linked from the homepage but aren't anymore
+  for (const [url, page] of existingMap.entries()) {
+    if (!seenPageUrls.has(url)) {
+      pageUpsertRows.push({
+        id: page.id,
+        company_id: company.id,
+        page_url: url,
+        page_type: page.page_type,
+        is_active: false,
+        last_status: 'disappeared',
+      });
+    }
+  }
+
+  // 8. Flush batched writes — constant number of round trips regardless of page count
+  if (snapshotRows.length > 0) {
+    await supabase.from('page_snapshots').insert(snapshotRows);
+  }
+  if (pageUpsertRows.length > 0) {
+    const cleaned = pageUpsertRows.map(row => {
+      const out = {};
+      for (const [k, v] of Object.entries(row)) if (v !== undefined) out[k] = v;
+      return out;
+    });
+    await supabase.from('company_pages').upsert(cleaned, { onConflict: 'id' });
   }
 }
 
+// ---------- MAIN ----------
 async function main() {
-  console.log('Starting fast scan...');
+  console.log('Starting fast scan (concurrent, path-limited, conditional GET)...');
   const { data: run } = await supabase
     .from('scan_runs')
     .insert({ status: 'running' })
@@ -233,20 +405,24 @@ async function main() {
     .single();
   const scanRunId = run.id;
 
-  const { data: companies } = await supabase
+  const { data: companies, error } = await supabase
     .from('companies')
     .select('id, company_name, website_url')
-    .not('website_url', 'is', null);
+    .not('website_url', 'is', null)
+    .not('website_url', 'ilike', '%linkedin.com%');
 
-  if (!companies || companies.length === 0) {
+  if (error || !companies || companies.length === 0) {
     console.log('No companies to scan.');
     await supabase.from('scan_runs').update({ status: 'completed', companies_scanned: 0 }).eq('id', scanRunId);
     return;
   }
 
-  let companiesScanned = 0, pagesScanned = 0, errors = 0;
-  for (const company of companies) {
-    console.log(`Scanning ${company.company_name} (${company.website_url})...`);
+  console.log(`Scanning ${companies.length} companies (concurrency: ${COMPANY_CONCURRENCY} companies / ${GLOBAL_HTTP_CONCURRENCY} HTTP requests)...`);
+
+  let companiesScanned = 0;
+  let errors = 0;
+
+  await concurrentMap(companies, COMPANY_CONCURRENCY, async (company) => {
     try {
       await scanCompany(company, scanRunId);
       companiesScanned++;
@@ -254,19 +430,27 @@ async function main() {
       errors++;
       console.error(`Company ${company.company_name} failed: ${e.message}`);
     }
-  }
+  });
 
   const { count } = await supabase
     .from('page_snapshots')
     .select('id', { count: 'exact', head: true })
     .eq('scan_run_id', scanRunId);
-  pagesScanned = count || 0;
 
   await supabase.from('scan_runs')
-    .update({ finished_at: new Date().toISOString(), status: 'completed', companies_scanned: companiesScanned, pages_scanned: pagesScanned, errors })
+    .update({
+      finished_at: new Date().toISOString(),
+      status: 'completed',
+      companies_scanned: companiesScanned,
+      pages_scanned: count || 0,
+      errors,
+    })
     .eq('id', scanRunId);
 
-  console.log('Scan complete!');
+  console.log(`Scan complete! Companies: ${companiesScanned}, snapshots written: ${count || 0}, errors: ${errors}`);
 }
 
-main().catch(console.error); 
+main().catch(err => {
+  console.error('Fatal error:', err);
+  process.exit(1);
+}); 
