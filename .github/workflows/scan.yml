@@ -15,44 +15,30 @@ jobs:
         with:
           node-version: '24'
 
-      # No new packages required — the faster scanner.js uses Node's built-in
-      # http/https modules for keep-alive connections, not a new dependency.
       - run: npm install axios cheerio @supabase/supabase-js rss-parser
 
-      # 1. Scan company websites (now: concurrent, path-limited to careers/blog/press,
-      #    conditional GET so unchanged pages aren't re-downloaded)
+      # 1. Scan company websites
       - name: Run Web Scanner
         run: node scanner.js
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
 
-      # 2. Collect Google News articles (no signal creation) — unchanged
+      # 2. Collect Google News articles
       - name: Collect Google News Articles
         run: node google-news-scanner.js
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
 
-      # 3. Generate signals (hybrid: keyword + AI, cap disabled)
+      # 3. Generate signals (hybrid: keyword + AI)
       - name: Generate Signals
         run: node generate-signals.js
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
-          DISABLE_CAP: true          # ← remove after testing (20-day cap stays off until you remove this line)
-
-      # 4. Send emails for pending signals — unchanged
-      - name: Send Emails
-        run: node send-emails.js
-        env:
-          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
-          RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
-          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
-          DISABLE_CAP: true          # ← remove after testing
+          DISABLE_CAP: true          # remove after testing
 
       # 4. Send emails for pending signals
       - name: Send Emails
