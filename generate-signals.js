@@ -9,7 +9,7 @@ const supabase = createClient(
 const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY;
 const CHUNK_SIZE = 10;   // items per AI request
 
-// ---------- WORD-LEVEL LEARNING DATA (still used to train, but not for detection) ----------
+// ---------- WORD-LEVEL LEARNING DATA (still used for feedback only) ----------
 let wordWeights = new Map();
 
 async function loadWordWeights() {
@@ -48,19 +48,183 @@ function getAddedText(oldText, newText) {
   return newLines.filter(line => !oldLines.has(line)).join(' ');
 }
 
-// ---------- KEYWORD DETECTION FUNCTIONS (now only for training feedback, not signal decision) ----------
-// All detection functions are kept but not used to decide signals.
-// They are still used to collect matchedWords for AI feedback learning.
+// ---------- KEYWORD DETECTION FUNCTIONS (only used to collect matchedWords for feedback) ----------
 async function detectFunding(text) {
-  // same as before
-  // returns { triggered, score, threshold, matchedWords }
+  const lower = text.toLowerCase();
+  const keywords = [
+    { phrase: 'announced', points: 2 }, { phrase: 'closes', points: 2 }, { phrase: 'closed', points: 2 },
+    { phrase: 'raises', points: 2 }, { phrase: 'raised', points: 2 }, { phrase: 'secures', points: 2 },
+    { phrase: 'secured', points: 2 }, { phrase: 'just raised', points: 3 }, { phrase: 'today announces', points: 3 },
+    { phrase: 'announced today', points: 3 },
+  ];
+  let score = 0;
+  const matched = [];
+  for (const kw of keywords) {
+    if (lower.includes(kw.phrase)) {
+      const weight = getWordWeight(kw.phrase);
+      score += kw.points * weight;
+      matched.push(kw.phrase);
+    }
+  }
+  const hasAmount = /\$\d+[mMkKbB]?|\d+\s?(million|billion)/i.test(lower);
+  if (hasAmount) { score += 3; matched.push('AMOUNT_PATTERN'); }
+  if (/\b(today|yesterday|this week|this month)\b/i.test(lower)) score += 1;
+  const currentYear = new Date().getFullYear();
+  const yearMatch = lower.match(/\b(20\d{2})\b/g);
+  if (yearMatch) {
+    const recentYears = yearMatch.filter(y => parseInt(y) >= currentYear - 1);
+    if (recentYears.length === 0 && yearMatch.length > 0) score -= 3;
+  }
+  const threshold = 5;
+  return { triggered: score >= threshold, score, threshold, matchedWords: matched };
 }
-async function detectHiringSurgeText(text) { /* same as before */ }
-async function detectProductLaunch(text) { /* same */ }
-async function detectPartnership(text) { /* same */ }
-async function detectExpansion(text) { /* same */ }
-async function detectRebranding(text) { /* same */ }
-async function detectLeadershipChange(text) { /* same */ }
+
+async function detectHiringSurgeText(text) {
+  const lower = text.toLowerCase();
+  const keywords = [
+    { phrase: "we're hiring", points: 3 }, { phrase: 'we are hiring', points: 3 },
+    { phrase: 'now hiring', points: 3 }, { phrase: 'expanding our team', points: 3 },
+    { phrase: 'expanding the team', points: 3 }, { phrase: 'join our team', points: 3 },
+    { phrase: 'join the team', points: 3 }, { phrase: 'multiple openings', points: 3 },
+    { phrase: 'hiring spree', points: 3 }, { phrase: 'new position', points: 1 },
+    { phrase: 'additional position', points: 1 }, { phrase: 'new role', points: 1 },
+    { phrase: 'additional role', points: 1 }, { phrase: 'growing our team', points: 2 },
+    { phrase: 'growing the team', points: 2 },
+  ];
+  let score = 0;
+  const matched = [];
+  for (const kw of keywords) {
+    if (lower.includes(kw.phrase)) {
+      const weight = getWordWeight(kw.phrase);
+      score += kw.points * weight;
+      matched.push(kw.phrase);
+    }
+  }
+  if (lower.includes('careers') && !/\b(hiring|join|apply|openings)\b/i.test(lower)) score -= 1;
+  const threshold = 3;
+  return { triggered: score >= threshold, score, threshold, matchedWords: matched };
+}
+
+async function detectProductLaunch(text) {
+  const lower = text.toLowerCase();
+  const keywords = [
+    { phrase: 'introducing', points: 2 }, { phrase: 'announcing', points: 2 },
+    { phrase: 'unveil', points: 2 }, { phrase: 'launch', points: 2 },
+    { phrase: 'launched', points: 2 }, { phrase: 'launches', points: 2 },
+    { phrase: 'launching', points: 2 }, { phrase: 'now available', points: 2 },
+    { phrase: 'new product', points: 3 }, { phrase: 'new feature', points: 3 },
+    { phrase: 'new platform', points: 3 }, { phrase: 'new tool', points: 3 },
+    { phrase: 'new app', points: 3 }, { phrase: 'new dashboard', points: 3 },
+    { phrase: 'new API', points: 3 }, { phrase: 'released', points: 2 },
+    { phrase: 'shipped', points: 2 }, { phrase: 'deployed', points: 2 },
+    { phrase: 'rolled out', points: 2 },
+  ];
+  let score = 0;
+  const matched = [];
+  for (const kw of keywords) {
+    if (lower.includes(kw.phrase)) {
+      const weight = getWordWeight(kw.phrase);
+      score += kw.points * weight;
+      matched.push(kw.phrase);
+    }
+  }
+  if (/\blaunching soon\b/i.test(lower)) score -= 1;
+  const threshold = 5;
+  return { triggered: score >= threshold, score, threshold, matchedWords: matched };
+}
+
+async function detectPartnership(text) {
+  const lower = text.toLowerCase();
+  const keywords = [
+    { phrase: 'partnership', points: 2 }, { phrase: 'partnering', points: 2 },
+    { phrase: 'partners with', points: 2 }, { phrase: 'partner with', points: 2 },
+    { phrase: 'integrates with', points: 2 }, { phrase: 'integrating with', points: 2 },
+    { phrase: 'integrated with', points: 2 }, { phrase: 'collaborates with', points: 2 },
+    { phrase: 'collaborating with', points: 2 }, { phrase: 'collaborated with', points: 2 },
+    { phrase: 'alliance with', points: 2 }, { phrase: 'together with', points: 1 },
+    { phrase: 'teaming up', points: 1 },
+  ];
+  let score = 0;
+  const matched = [];
+  for (const kw of keywords) {
+    if (lower.includes(kw.phrase)) {
+      const weight = getWordWeight(kw.phrase);
+      score += kw.points * weight;
+      matched.push(kw.phrase);
+    }
+  }
+  const threshold = 3;
+  return { triggered: score >= threshold, score, threshold, matchedWords: matched };
+}
+
+async function detectExpansion(text) {
+  const lower = text.toLowerCase();
+  const keywords = [
+    { phrase: 'new office', points: 2 }, { phrase: 'new location', points: 2 },
+    { phrase: 'new city', points: 2 }, { phrase: 'new country', points: 2 },
+    { phrase: 'new region', points: 2 }, { phrase: 'expanding to', points: 2 },
+    { phrase: 'expanding into', points: 2 }, { phrase: 'now in', points: 2 },
+    { phrase: 'global expansion', points: 2 }, { phrase: 'opening an office', points: 2 },
+    { phrase: 'opening a office', points: 2 },
+  ];
+  let score = 0;
+  const matched = [];
+  for (const kw of keywords) {
+    if (lower.includes(kw.phrase)) {
+      const weight = getWordWeight(kw.phrase);
+      score += kw.points * weight;
+      matched.push(kw.phrase);
+    }
+  }
+  const threshold = 4;
+  return { triggered: score >= threshold, score, threshold, matchedWords: matched };
+}
+
+async function detectRebranding(text) {
+  const lower = text.toLowerCase();
+  const keywords = [
+    { phrase: 'rebrand', points: 2 }, { phrase: 'new look', points: 2 },
+    { phrase: 'new name', points: 2 }, { phrase: 'new logo', points: 2 },
+    { phrase: 'new identity', points: 2 }, { phrase: 'refreshed brand', points: 2 },
+    { phrase: 'refreshed logo', points: 2 }, { phrase: 'refreshed website', points: 2 },
+    { phrase: 'we are now called', points: 3 }, { phrase: 'formerly known as', points: 3 },
+    { phrase: 'introducing our new name', points: 3 }, { phrase: 'introducing our new logo', points: 3 },
+  ];
+  let score = 0;
+  const matched = [];
+  for (const kw of keywords) {
+    if (lower.includes(kw.phrase)) {
+      const weight = getWordWeight(kw.phrase);
+      score += kw.points * weight;
+      matched.push(kw.phrase);
+    }
+  }
+  const threshold = 4;
+  return { triggered: score >= threshold, score, threshold, matchedWords: matched };
+}
+
+async function detectLeadershipChange(text) {
+  const lower = text.toLowerCase();
+  const keywords = [
+    { phrase: 'new ceo', points: 3 }, { phrase: 'new cto', points: 3 },
+    { phrase: 'new cfo', points: 3 }, { phrase: 'new coo', points: 3 },
+    { phrase: 'new vp', points: 3 }, { phrase: 'new director', points: 3 },
+    { phrase: 'new head of', points: 3 }, { phrase: 'appointed', points: 3 },
+    { phrase: 'hired as', points: 3 }, { phrase: 'joined as', points: 2 },
+    { phrase: 'takes over as', points: 2 }, { phrase: 'promoted to', points: 2 },
+  ];
+  let score = 0;
+  const matched = [];
+  for (const kw of keywords) {
+    if (lower.includes(kw.phrase)) {
+      const weight = getWordWeight(kw.phrase);
+      score += kw.points * weight;
+      matched.push(kw.phrase);
+    }
+  }
+  const threshold = 5;
+  return { triggered: score >= threshold, score, threshold, matchedWords: matched };
+}
 
 async function getSignalsFromTextKeyword(text, oldText = null) {
   const analysisText = oldText ? getAddedText(oldText, text) : text;
@@ -114,7 +278,6 @@ async function hasRecentSignal(leadId) {
 function extractJsonObject(text) {
   if (!text) throw new Error('empty AI response');
   let cleaned = text.trim();
-  // Remove markdown code fences if any
   cleaned = cleaned.replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/i, '');
   const firstBrace = cleaned.indexOf('{');
   const lastBrace = cleaned.lastIndexOf('}');
@@ -195,8 +358,7 @@ async function batchDetectSignals(items) {
       Object.assign(combinedResult, chunkResult);
     } catch (err) {
       console.error(`  Chunk ${i/CHUNK_SIZE + 1} failed permanently:`, err.message);
-      // We do NOT fallback to keyword engine. Just skip this chunk.
-      // You may want to mark these items as processed to avoid infinite loop, but for now skip.
+      // Skip this chunk and continue
     }
   }
   return combinedResult;
@@ -219,7 +381,7 @@ function buildBatchPrompt(items) {
   return prompt;
 }
 
-// ---------- AI FEEDBACK LEARNING (still trains word weights from AI decisions) ----------
+// ---------- AI FEEDBACK LEARNING ----------
 async function applyAIFeedback(itemMeta, aiResult) {
   const adjustments = new Map();
   function addAdjustment(word, field) {
@@ -299,9 +461,7 @@ async function generateSignals() {
   const aiItems = [];
   const itemMeta = {};
 
-  // Process pages: gather only changed pages with at least one snapshot and keyword match?
-  // We will now send EVERY changed page to AI, but only those with at least 2 snapshots to compare.
-  // The AI will decide if signal exists. We'll still collect keyword matchedWords for feedback.
+  // Process pages: collect only changed pages with text change
   if (changedPages && changedPages.length > 0) {
     for (const page of changedPages) {
       const { data: snap } = await supabase
@@ -319,22 +479,19 @@ async function generateSignals() {
       const currentText = snap[0].cleaned_text || '';
       const previousText = snap[1].cleaned_text || '';
 
-      // Collect keyword results for feedback later
       const keywordResults = await getSignalsFromTextKeyword(currentText, previousText);
 
-      // Hiring surge (numeric) still applied directly; we don't need AI for that.
       let hasHiringSurge = false;
       if (page.page_type === 'careers') {
         hasHiringSurge = await checkHiringSurge(page.id);
       }
 
-      // Always add to AI batch if there is actual text change (even if no keyword results), so AI can decide
+      // Always add to AI batch if text actually changed
       if (currentText && previousText && currentText !== previousText) {
         const itemId = `page-${page.id}`;
         aiItems.push({ id: itemId, type: 'page', text: currentText });
         itemMeta[itemId] = { type: 'page', page, keywordResults, hasHiringSurge };
       } else {
-        // If no change, mark as processed to avoid future loops
         await supabase.from('company_pages').update({ signals_generated: true }).eq('id', page.id);
       }
     }
@@ -344,25 +501,22 @@ async function generateSignals() {
   if (newsEntries && newsEntries.length > 0) {
     for (const news of newsEntries) {
       const text = `${news.title} ${news.snippet}`;
-      // We'll include all news for AI; no keyword prefilter.
       const itemId = `news-${news.id}`;
       aiItems.push({ id: itemId, type: 'news', text });
       itemMeta[itemId] = { type: 'news', news, keywordResults: [] };
     }
   }
 
-  // Batch AI call (no fallback)
+  // Batch AI call
   let aiResult = {};
   if (aiItems.length > 0) {
     aiResult = await batchDetectSignals(aiItems);
-    if (Object.keys(aiResult).length === 0) {
-      console.warn('AI returned no results for any item. Continuing with possible hiring surges only.');
-    } else {
+    if (Object.keys(aiResult).length > 0) {
       await applyAIFeedback(itemMeta, aiResult);
     }
   }
 
-  // Now process results and create signals
+  // Process results and create signals
   const companySignalsMap = new Map();
 
   function addSignalToCompany(companyId, companyName, websiteUrl, type, explanation, sourceObj, words) {
@@ -383,17 +537,7 @@ async function generateSignals() {
     if (words) words.forEach(w => entry.triggeredWords.add(w));
   }
 
-  // First, add hiring surges from itemMeta (even if AI didn't respond)
-  for (const [itemId, meta] of Object.entries(itemMeta)) {
-    if (meta.type === 'page' && meta.hasHiringSurge) {
-      const page = meta.page;
-      const companyId = page.company_id;
-      // Fetch company data (batched later)
-      // We'll handle company data in the loop below instead.
-    }
-  }
-
-  // Batch fetch company data for all unique company_ids
+  // Batch company lookup
   const companyIds = new Set();
   for (const meta of Object.values(itemMeta)) {
     if (meta.type === 'page') companyIds.add(meta.page.company_id);
@@ -408,12 +552,10 @@ async function generateSignals() {
     for (const c of companiesData || []) companyById.set(c.id, c);
   }
 
-  // Process each item: either from AI result or hiring surge
   for (const [itemId, meta] of Object.entries(itemMeta)) {
     const company = companyById.get(meta.type === 'page' ? meta.page.company_id : meta.news.company_id);
     if (!company) continue;
 
-    // Check AI result for this item
     const aiDecision = aiResult[itemId];
     if (aiDecision && aiDecision.signals && aiDecision.signals.length > 0) {
       console.log(`  AI signals for ${itemId}: ${aiDecision.signals.join(', ')}`);
@@ -430,7 +572,6 @@ async function generateSignals() {
       }
     }
 
-    // Add hiring surge if present and no AI signal for hiring (avoid duplicates)
     if (meta.type === 'page' && meta.hasHiringSurge) {
       if (!aiDecision || !aiDecision.signals.includes('hiring')) {
         const { data: snapJob } = await supabase
@@ -453,13 +594,12 @@ async function generateSignals() {
       }
     }
 
-    // Mark page as processed if it was a page
     if (meta.type === 'page') {
       await supabase.from('company_pages').update({ signals_generated: true }).eq('id', meta.page.id);
     }
   }
 
-  // Create grouped signals for each company
+  // Create grouped signals for companies
   for (const [companyId, data] of companySignalsMap.entries()) {
     const signalTypes = [...data.signalTypes];
     if (signalTypes.length === 0) continue;
