@@ -7,9 +7,10 @@ const supabase = createClient(
 );
 
 const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY;
-const CHUNK_SIZE = 10;   // items per AI request
+const CHUNK_SIZE = 10;
+const MAX_SIGNALS_PER_USER_PER_DAY = 5;   // daily cap per user
 
-// ---------- WORD-LEVEL LEARNING DATA (still used for feedback only) ----------
+// ---------- WORD-LEVEL LEARNING DATA (feedback only) ----------
 let wordWeights = new Map();
 
 async function loadWordWeights() {
@@ -274,16 +275,26 @@ async function hasRecentSignal(leadId) {
   return data && data.length > 0;
 }
 
-// ---------- AI CALL WITH ROBUST JSON PARSING AND RETRIES ----------
+// ---------- Daily cap per user ----------
+async function countSignalsToday(userId) {
+  const startOfDay = new Date();
+  startOfDay.setHours(0, 0, 0, 0);
+  const { count } = await supabase
+    .from('signals')
+    .select('id', { count: 'exact', head: true })
+    .eq('user_id', userId)
+    .gte('detected_at', startOfDay.toISOString());
+  return count || 0;
+}
+
+// ---------- AI CALL ----------
 function extractJsonObject(text) {
   if (!text) throw new Error('empty AI response');
   let cleaned = text.trim();
   cleaned = cleaned.replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/i, '');
   const firstBrace = cleaned.indexOf('{');
   const lastBrace = cleaned.lastIndexOf('}');
-  if (firstBrace === -1 || lastBrace === -1 || lastBrace < firstBrace) {
-    throw new Error('no JSON object found');
-  }
+  if (firstBrace === -1 || lastBrace === -1 || lastBrace < firstBrace) throw new Error('no JSON object found');
   const jsonSlice = cleaned.slice(firstBrace, lastBrace + 1);
   return JSON.parse(jsonSlice);
 }
@@ -307,8 +318,8 @@ async function callOpenRouter(prompt, retries = 5) {
       });
 
       if (response.status === 429) {
-        const waitMs = 15000 * attempt;
-        console.warn(`  Rate limited, retrying in ${waitMs/1000}s...`);
+        const waitMs = 20000 * attempt;
+        console.warn(`  Rate limited, waiting ${waitMs/1000}s...`);
         await new Promise(resolve => setTimeout(resolve, waitMs));
         continue;
       }
@@ -317,8 +328,7 @@ async function callOpenRouter(prompt, retries = 5) {
         const errText = await response.text();
         console.error(`  AI request failed (${response.status}):`, errText);
         if (attempt < retries) {
-          console.warn(`  Retrying attempt ${attempt+1}...`);
-          await new Promise(resolve => setTimeout(resolve, 10000));
+          await new Promise(resolve => setTimeout(resolve, 12000));
           continue;
         }
         throw new Error(`OpenRouter API error: ${response.status}`);
@@ -331,17 +341,17 @@ async function callOpenRouter(prompt, retries = 5) {
       try {
         return extractJsonObject(content);
       } catch (parseErr) {
-        console.warn(`  JSON parse failed (${parseErr.message}), retrying...`);
+        console.warn('  JSON parse failed, retrying...');
         if (attempt < retries) {
-          await new Promise(resolve => setTimeout(resolve, 8000));
+          await new Promise(resolve => setTimeout(resolve, 10000));
           continue;
         }
         throw new Error('Could not parse JSON after retries');
       }
     } catch (err) {
       if (attempt === retries) throw err;
-      console.warn(`  Request failed: ${err.message}, retrying...`);
-      await new Promise(resolve => setTimeout(resolve, 10000));
+      console.warn(`  Retrying (${err.message})...`);
+      await new Promise(resolve => setTimeout(resolve, 12000));
     }
   }
   throw new Error('All retries exhausted');
@@ -352,13 +362,12 @@ async function batchDetectSignals(items) {
   for (let i = 0; i < items.length; i += CHUNK_SIZE) {
     const chunk = items.slice(i, i + CHUNK_SIZE);
     const prompt = buildBatchPrompt(chunk);
-    console.log(`  Processing chunk ${i/CHUNK_SIZE + 1} with ${chunk.length} items...`);
+    console.log(`  Processing chunk ${i/CHUNK_SIZE + 1}...`);
     try {
       const chunkResult = await callOpenRouter(prompt);
       Object.assign(combinedResult, chunkResult);
     } catch (err) {
-      console.error(`  Chunk ${i/CHUNK_SIZE + 1} failed permanently:`, err.message);
-      // Skip this chunk and continue
+      console.error('  Chunk failed, skipping.');
     }
   }
   return combinedResult;
@@ -366,8 +375,9 @@ async function batchDetectSignals(items) {
 
 function buildBatchPrompt(items) {
   let prompt = "You are an assistant that reads web page text and detects business signals a B2B salesperson would care about.\n\n";
-  prompt += "Signals: funding, hiring, launch, partnership, expansion, rebranding, leadership.\n";
+  prompt += "Signals: funding, hiring, launch, partnership, expansion, rebranding, leadership, growth.\n";
   prompt += "Below are multiple pieces of text, each with an ID. For each one, decide if it describes a specific, recent event matching any signal type. If so, list the signal types and a short explanation. If the text is just a menu, historical timeline, educational article, or boilerplate, return empty signals.\n\n";
+  prompt += "Growth is a general signal for when a company is scaling, opening new locations, expanding teams, or showing other signs of being in an active growth phase, even if it doesn't fit the other specific types.\n\n";
 
   for (const item of items) {
     const id = item.id;
@@ -396,7 +406,7 @@ async function applyAIFeedback(itemMeta, aiResult) {
 
     for (const kwResult of meta.keywordResults) {
       const type = kwResult.type;
-      const aiAgreed = aiSignals.includes(type);
+      const aiAgreed = aiSignals.includes(type) || aiSignals.includes('growth');
       const words = kwResult.matchedWords || [];
       for (const word of words) {
         if (aiAgreed) addAdjustment(word, 'ai_good');
@@ -428,7 +438,7 @@ async function applyAIFeedback(itemMeta, aiResult) {
 
 // ---------- MAIN ----------
 async function generateSignals() {
-  console.log('Generating signals (AI only, robust retry)...');
+  console.log('Generating signals (AI only, daily cap per user)...');
 
   await loadWordWeights();
 
@@ -440,18 +450,16 @@ async function generateSignals() {
     .single();
   const scanRunId = latestRun?.id;
   if (!scanRunId) {
-    console.log('No scan run found – run the scanner first.');
+    console.log('No scan run found.');
     return;
   }
 
-  // ----- Changed pages -----
   const { data: changedPages } = await supabase
     .from('company_pages')
     .select('id, page_url, page_type, company_id')
     .eq('last_status', 'changed')
     .eq('signals_generated', false);
 
-  // ----- Pending news -----
   const { data: newsEntries } = await supabase
     .from('pending_news_signals')
     .select('id, company_id, article_url, title, snippet, pub_date');
@@ -461,8 +469,7 @@ async function generateSignals() {
   const aiItems = [];
   const itemMeta = {};
 
-  // Process pages: collect only changed pages with text change
-  if (changedPages && changedPages.length > 0) {
+  if (changedPages) {
     for (const page of changedPages) {
       const { data: snap } = await supabase
         .from('page_snapshots')
@@ -478,15 +485,11 @@ async function generateSignals() {
 
       const currentText = snap[0].cleaned_text || '';
       const previousText = snap[1].cleaned_text || '';
-
       const keywordResults = await getSignalsFromTextKeyword(currentText, previousText);
 
       let hasHiringSurge = false;
-      if (page.page_type === 'careers') {
-        hasHiringSurge = await checkHiringSurge(page.id);
-      }
+      if (page.page_type === 'careers') hasHiringSurge = await checkHiringSurge(page.id);
 
-      // Always add to AI batch if text actually changed
       if (currentText && previousText && currentText !== previousText) {
         const itemId = `page-${page.id}`;
         aiItems.push({ id: itemId, type: 'page', text: currentText });
@@ -497,8 +500,7 @@ async function generateSignals() {
     }
   }
 
-  // Process news
-  if (newsEntries && newsEntries.length > 0) {
+  if (newsEntries) {
     for (const news of newsEntries) {
       const text = `${news.title} ${news.snippet}`;
       const itemId = `news-${news.id}`;
@@ -507,16 +509,26 @@ async function generateSignals() {
     }
   }
 
-  // Batch AI call
   let aiResult = {};
   if (aiItems.length > 0) {
     aiResult = await batchDetectSignals(aiItems);
-    if (Object.keys(aiResult).length > 0) {
-      await applyAIFeedback(itemMeta, aiResult);
-    }
+    await applyAIFeedback(itemMeta, aiResult);
   }
 
-  // Process results and create signals
+  const companyIds = new Set();
+  for (const meta of Object.values(itemMeta)) {
+    if (meta.type === 'page') companyIds.add(meta.page.company_id);
+    else if (meta.type === 'news') companyIds.add(meta.news.company_id);
+  }
+  const companyById = new Map();
+  if (companyIds.size > 0) {
+    const { data: companiesData } = await supabase
+      .from('companies')
+      .select('id, company_name, website_url')
+      .in('id', Array.from(companyIds));
+    for (const c of companiesData || []) companyById.set(c.id, c);
+  }
+
   const companySignalsMap = new Map();
 
   function addSignalToCompany(companyId, companyName, websiteUrl, type, explanation, sourceObj, words) {
@@ -537,21 +549,6 @@ async function generateSignals() {
     if (words) words.forEach(w => entry.triggeredWords.add(w));
   }
 
-  // Batch company lookup
-  const companyIds = new Set();
-  for (const meta of Object.values(itemMeta)) {
-    if (meta.type === 'page') companyIds.add(meta.page.company_id);
-    else if (meta.type === 'news') companyIds.add(meta.news.company_id);
-  }
-  const companyById = new Map();
-  if (companyIds.size > 0) {
-    const { data: companiesData } = await supabase
-      .from('companies')
-      .select('id, company_name, website_url')
-      .in('id', Array.from(companyIds));
-    for (const c of companiesData || []) companyById.set(c.id, c);
-  }
-
   for (const [itemId, meta] of Object.entries(itemMeta)) {
     const company = companyById.get(meta.type === 'page' ? meta.page.company_id : meta.news.company_id);
     if (!company) continue;
@@ -560,37 +557,16 @@ async function generateSignals() {
     if (aiDecision && aiDecision.signals && aiDecision.signals.length > 0) {
       console.log(`  AI signals for ${itemId}: ${aiDecision.signals.join(', ')}`);
       for (const type of aiDecision.signals) {
-        addSignalToCompany(
-          company.id,
-          company.company_name,
-          company.website_url,
-          type,
-          aiDecision.explanation,
-          { label: `${meta.type === 'page' ? meta.page.page_type + ': ' + meta.page.page_url : 'News: ' + meta.news.title}`, url: meta.type === 'page' ? meta.page.page_url : meta.news.article_url },
-          meta.keywordResults.flatMap(r => r.matchedWords || [])
-        );
+        addSignalToCompany(company.id, company.company_name, company.website_url, type, aiDecision.explanation, { label: 'source', url: '' }, meta.keywordResults.flatMap(r => r.matchedWords || []));
       }
     }
 
     if (meta.type === 'page' && meta.hasHiringSurge) {
       if (!aiDecision || !aiDecision.signals.includes('hiring')) {
-        const { data: snapJob } = await supabase
-          .from('page_snapshots')
-          .select('job_count')
-          .eq('company_page_id', meta.page.id)
-          .order('fetched_at', { ascending: false })
-          .limit(2);
+        const { data: snapJob } = await supabase.from('page_snapshots').select('job_count').eq('company_page_id', meta.page.id).order('fetched_at', { ascending: false }).limit(2);
         const now = snapJob?.[0]?.job_count || 0;
         const before = snapJob?.[1]?.job_count || 0;
-        addSignalToCompany(
-          company.id,
-          company.company_name,
-          company.website_url,
-          'hiring',
-          `Job openings increased from ${before} to ${now}.`,
-          { label: 'Careers page', url: meta.page.page_url },
-          ['hiring_surge']
-        );
+        addSignalToCompany(company.id, company.company_name, company.website_url, 'hiring', `Job openings increased from ${before} to ${now}.`, { label: 'Careers page', url: meta.page.page_url }, ['hiring_surge']);
       }
     }
 
@@ -599,16 +575,11 @@ async function generateSignals() {
     }
   }
 
-  // Create grouped signals for companies
   for (const [companyId, data] of companySignalsMap.entries()) {
     const signalTypes = [...data.signalTypes];
     if (signalTypes.length === 0) continue;
 
-    const { data: leads } = await supabase
-      .from('leads')
-      .select('id, user_id')
-      .eq('company_name', data.companyName)
-      .eq('company_website', data.websiteUrl);
+    const { data: leads } = await supabase.from('leads').select('id, user_id').eq('company_name', data.companyName).eq('company_website', data.websiteUrl);
     if (!leads || leads.length === 0) continue;
 
     const description = `Signals detected: ${signalTypes.join(', ')}`;
@@ -617,7 +588,15 @@ async function generateSignals() {
     const triggeredWords = [...data.triggeredWords];
 
     for (const lead of leads) {
+      // Monthly cap (20 days)
       if (await hasRecentSignal(lead.id)) continue;
+
+      // Daily cap per user
+      const todaySignals = await countSignalsToday(lead.user_id);
+      if (todaySignals >= MAX_SIGNALS_PER_USER_PER_DAY) {
+        console.log(`  Skipping lead ${lead.id}, daily cap reached.`);
+        continue;
+      }
 
       const { error: insertError } = await supabase.from('signals').insert({
         lead_id: lead.id,
@@ -641,8 +620,7 @@ async function generateSignals() {
     }
   }
 
-  // Delete processed news
-  if (newsEntries && newsEntries.length > 0) {
+  if (newsEntries) {
     const idsToDelete = newsEntries.map(n => n.id);
     await supabase.from('pending_news_signals').delete().in('id', idsToDelete);
   }
