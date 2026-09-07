@@ -8,7 +8,7 @@ const supabase = createClient(
 
 const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY;
 const CHUNK_SIZE = 10;
-const MAX_SIGNALS_PER_USER_PER_DAY = 5;   // daily cap per user
+const MAX_SIGNALS_PER_USER_PER_DAY = 5;
 
 // ---------- WORD-LEVEL LEARNING DATA (feedback only) ----------
 let wordWeights = new Map();
@@ -49,7 +49,7 @@ function getAddedText(oldText, newText) {
   return newLines.filter(line => !oldLines.has(line)).join(' ');
 }
 
-// ---------- KEYWORD DETECTION FUNCTIONS (only used to collect matchedWords for feedback) ----------
+// ---------- KEYWORD DETECTION FUNCTIONS (only for feedback) ----------
 async function detectFunding(text) {
   const lower = text.toLowerCase();
   const keywords = [
@@ -376,8 +376,8 @@ async function batchDetectSignals(items) {
 function buildBatchPrompt(items) {
   let prompt = "You are an assistant that reads web page text and detects business signals a B2B salesperson would care about.\n\n";
   prompt += "Signals: funding, hiring, launch, partnership, expansion, rebranding, leadership, growth.\n";
-  prompt += "Below are multiple pieces of text, each with an ID. For each one, decide if it describes a specific, recent event matching any signal type. If so, list the signal types and a short explanation. If the text is just a menu, historical timeline, educational article, or boilerplate, return empty signals.\n\n";
-  prompt += "Growth is a general signal for when a company is scaling, opening new locations, expanding teams, or showing other signs of being in an active growth phase, even if it doesn't fit the other specific types.\n\n";
+  prompt += "For each item, provide a JSON object with keys: \"signals\" (array of strings), \"explanation\" (string), and \"confidence\" (number 0-100).\n";
+  prompt += "Below are multiple pieces of text, each with an ID.\n\n";
 
   for (const item of items) {
     const id = item.id;
@@ -386,7 +386,7 @@ function buildBatchPrompt(items) {
     prompt += `ID: ${id}\nType: ${type}\nText:\n${text}\n\n`;
   }
 
-  prompt += "Return a JSON object where each key is an ID, and the value is an object with \"signals\" (array of strings) and \"explanation\" (string). If no signals, use empty array and empty string.\n";
+  prompt += "Return a JSON object where each key is an ID, and the value is the object described above. If no signals, use empty array, empty explanation, and confidence 0.\n";
   prompt += "Only return valid JSON. Do not include any other text, comments, or markdown.";
   return prompt;
 }
@@ -438,7 +438,7 @@ async function applyAIFeedback(itemMeta, aiResult) {
 
 // ---------- MAIN ----------
 async function generateSignals() {
-  console.log('Generating signals (AI only, daily cap per user)...');
+  console.log('Generating signals (AI only, confidence, dedupe, grouping)...');
 
   await loadWordWeights();
 
@@ -469,6 +469,7 @@ async function generateSignals() {
   const aiItems = [];
   const itemMeta = {};
 
+  // Process pages
   if (changedPages) {
     for (const page of changedPages) {
       const { data: snap } = await supabase
@@ -500,6 +501,7 @@ async function generateSignals() {
     }
   }
 
+  // Process news
   if (newsEntries) {
     for (const news of newsEntries) {
       const text = `${news.title} ${news.snippet}`;
@@ -515,6 +517,7 @@ async function generateSignals() {
     await applyAIFeedback(itemMeta, aiResult);
   }
 
+  // Batch company lookup
   const companyIds = new Set();
   for (const meta of Object.values(itemMeta)) {
     if (meta.type === 'page') companyIds.add(meta.page.company_id);
@@ -529,9 +532,10 @@ async function generateSignals() {
     for (const c of companiesData || []) companyById.set(c.id, c);
   }
 
+  // Build company signals map with confidence
   const companySignalsMap = new Map();
 
-  function addSignalToCompany(companyId, companyName, websiteUrl, type, explanation, sourceObj, words) {
+  function addSignalToCompany(companyId, companyName, websiteUrl, type, explanation, confidence, sourceObj, words) {
     if (!companySignalsMap.has(companyId)) {
       companySignalsMap.set(companyId, {
         companyName,
@@ -539,7 +543,8 @@ async function generateSignals() {
         signalTypes: new Set(),
         explanations: [],
         sources: [],
-        triggeredWords: new Set()
+        triggeredWords: new Set(),
+        confidence: 0
       });
     }
     const entry = companySignalsMap.get(companyId);
@@ -547,6 +552,7 @@ async function generateSignals() {
     if (explanation) entry.explanations.push(explanation);
     if (sourceObj) entry.sources.push(sourceObj);
     if (words) words.forEach(w => entry.triggeredWords.add(w));
+    if (confidence > entry.confidence) entry.confidence = confidence; // max confidence
   }
 
   for (const [itemId, meta] of Object.entries(itemMeta)) {
@@ -555,9 +561,9 @@ async function generateSignals() {
 
     const aiDecision = aiResult[itemId];
     if (aiDecision && aiDecision.signals && aiDecision.signals.length > 0) {
-      console.log(`  AI signals for ${itemId}: ${aiDecision.signals.join(', ')}`);
+      console.log(`  AI signals for ${itemId}: ${aiDecision.signals.join(', ')} (confidence: ${aiDecision.confidence})`);
       for (const type of aiDecision.signals) {
-        addSignalToCompany(company.id, company.company_name, company.website_url, type, aiDecision.explanation, { label: 'source', url: '' }, meta.keywordResults.flatMap(r => r.matchedWords || []));
+        addSignalToCompany(company.id, company.company_name, company.website_url, type, aiDecision.explanation, aiDecision.confidence, { label: 'source', url: '' }, meta.keywordResults.flatMap(r => r.matchedWords || []));
       }
     }
 
@@ -566,7 +572,7 @@ async function generateSignals() {
         const { data: snapJob } = await supabase.from('page_snapshots').select('job_count').eq('company_page_id', meta.page.id).order('fetched_at', { ascending: false }).limit(2);
         const now = snapJob?.[0]?.job_count || 0;
         const before = snapJob?.[1]?.job_count || 0;
-        addSignalToCompany(company.id, company.company_name, company.website_url, 'hiring', `Job openings increased from ${before} to ${now}.`, { label: 'Careers page', url: meta.page.page_url }, ['hiring_surge']);
+        addSignalToCompany(company.id, company.company_name, company.website_url, 'hiring', `Job openings increased from ${before} to ${now}.`, 90, { label: 'Careers page', url: meta.page.page_url }, ['hiring_surge']);
       }
     }
 
@@ -575,51 +581,76 @@ async function generateSignals() {
     }
   }
 
+  // Now create signals per user per company (deduplicating and grouping)
+  const createdSignals = new Set(); // for dedup within run
+
   for (const [companyId, data] of companySignalsMap.entries()) {
     const signalTypes = [...data.signalTypes];
     if (signalTypes.length === 0) continue;
 
-    const { data: leads } = await supabase.from('leads').select('id, user_id').eq('company_name', data.companyName).eq('company_website', data.websiteUrl);
+    // Fetch leads for this company, grouped by user_id
+    const { data: leads } = await supabase
+      .from('leads')
+      .select('id, user_id')
+      .eq('company_name', data.companyName)
+      .eq('company_website', data.websiteUrl);
+
     if (!leads || leads.length === 0) continue;
+
+    // Group leads by user_id, pick first lead id for each user
+    const leadsByUser = new Map();
+    for (const lead of leads) {
+      if (!leadsByUser.has(lead.user_id)) {
+        leadsByUser.set(lead.user_id, lead.id);
+      }
+    }
 
     const description = `Signals detected: ${signalTypes.join(', ')}`;
     const signalDetail = data.explanations.join(' | ') || description;
     const sourceUrls = data.sources;
     const triggeredWords = [...data.triggeredWords];
+    const confidence = data.confidence || 50;
 
-    for (const lead of leads) {
-      // Monthly cap (20 days)
-      if (await hasRecentSignal(lead.id)) continue;
+    for (const [userId, leadId] of leadsByUser.entries()) {
+      // Check monthly cap on this lead
+      if (await hasRecentSignal(leadId)) continue;
 
-      // Daily cap per user
-      const todaySignals = await countSignalsToday(lead.user_id);
+      // Check daily cap for this user
+      const todaySignals = await countSignalsToday(userId);
       if (todaySignals >= MAX_SIGNALS_PER_USER_PER_DAY) {
-        console.log(`  Skipping lead ${lead.id}, daily cap reached.`);
+        console.log(`  Skipping user ${userId}, daily cap reached.`);
         continue;
       }
 
+      // Dedup within this run: same user+company
+      const dedupKey = `${userId}-${companyId}`;
+      if (createdSignals.has(dedupKey)) continue;
+      createdSignals.add(dedupKey);
+
       const { error: insertError } = await supabase.from('signals').insert({
-        lead_id: lead.id,
-        user_id: lead.user_id,
+        lead_id: leadId,
+        user_id: userId,
         type: 'multi',
         description,
         signal_detail: signalDetail,
         source_url: data.websiteUrl,
         source_urls: sourceUrls,
         triggered_words: triggeredWords,
+        confidence: confidence,
         email_status: 'pending',
         email_subject: `Update: ${data.companyName}`,
         scan_run_id: scanRunId
       });
 
       if (insertError) {
-        console.error(`  Error inserting signal: ${insertError.message}`);
+        console.error(`  Error inserting signal for user ${userId}: ${insertError.message}`);
       } else {
-        console.log(`  ✅ Signal created for lead ${lead.id}`);
+        console.log(`  ✅ Signal created for user ${userId} (company ${data.companyName})`);
       }
     }
   }
 
+  // Delete processed news
   if (newsEntries) {
     const idsToDelete = newsEntries.map(n => n.id);
     await supabase.from('pending_news_signals').delete().in('id', idsToDelete);
