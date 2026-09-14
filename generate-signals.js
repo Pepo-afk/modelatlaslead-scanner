@@ -10,7 +10,7 @@ const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY;
 const CHUNK_SIZE = 10;
 const MAX_SIGNALS_PER_USER_PER_DAY = 5;
 
-// ---------- WORD-LEVEL LEARNING DATA (feedback only) ----------
+// ---------- WORD WEIGHTS (feedback only) ----------
 let wordWeights = new Map();
 
 async function loadWordWeights() {
@@ -49,7 +49,16 @@ function getAddedText(oldText, newText) {
   return newLines.filter(line => !oldLines.has(line)).join(' ');
 }
 
-// ---------- KEYWORD DETECTION FUNCTIONS (only for feedback) ----------
+function normalizeUrl(url) {
+  if (!url) return null;
+  if (typeof url !== 'string') return null;
+  const trimmed = url.trim();
+  if (!trimmed) return null;
+  if (trimmed.startsWith('http://') || trimmed.startsWith('https://')) return trimmed;
+  return 'https://' + trimmed;
+}
+
+// ---------- KEYWORD DETECTION (feedback only) ----------
 async function detectFunding(text) {
   const lower = text.toLowerCase();
   const keywords = [
@@ -275,7 +284,6 @@ async function hasRecentSignal(leadId) {
   return data && data.length > 0;
 }
 
-// ---------- Daily cap per user ----------
 async function countSignalsToday(userId) {
   const startOfDay = new Date();
   startOfDay.setHours(0, 0, 0, 0);
@@ -376,8 +384,8 @@ async function batchDetectSignals(items) {
 function buildBatchPrompt(items) {
   let prompt = "You are an assistant that reads web page text and detects business signals a B2B salesperson would care about.\n\n";
   prompt += "Signals: funding, hiring, launch, partnership, expansion, rebranding, leadership, growth.\n";
-  prompt += "For each item, provide a JSON object with keys: \"signals\" (array of strings), \"explanation\" (string), and \"confidence\" (number 0-100).\n";
-  prompt += "Below are multiple pieces of text, each with an ID.\n\n";
+  prompt += "For each item, return a JSON object with: \"signals\" (array of strings), \"explanation\" (a specific, human sentence describing what actually happened — include names, numbers, and facts when present), and \"confidence\" (0-100).\n";
+  prompt += "Be specific. Do not repeat the same idea. If a company appears twice, return the more informative explanation. If the text is just a menu, a historical timeline, an educational article, a job listing, or boilerplate, return empty signals.\n\n";
 
   for (const item of items) {
     const id = item.id;
@@ -387,7 +395,7 @@ function buildBatchPrompt(items) {
   }
 
   prompt += "Return a JSON object where each key is an ID, and the value is the object described above. If no signals, use empty array, empty explanation, and confidence 0.\n";
-  prompt += "Only return valid JSON. Do not include any other text, comments, or markdown.";
+  prompt += "Only return valid JSON. Do not include any other text.";
   return prompt;
 }
 
@@ -438,7 +446,7 @@ async function applyAIFeedback(itemMeta, aiResult) {
 
 // ---------- MAIN ----------
 async function generateSignals() {
-  console.log('Generating signals (AI only, confidence, dedupe, grouping)...');
+  console.log('Generating signals (AI only, dedup, real sources)...');
 
   await loadWordWeights();
 
@@ -469,9 +477,22 @@ async function generateSignals() {
   const aiItems = [];
   const itemMeta = {};
 
-  // Process pages
+  // Process changed pages — skip careers pages from AI text analysis
   if (changedPages) {
     for (const page of changedPages) {
+      // Careers pages only use numeric hiring surge, never AI text
+      if (page.page_type === 'careers') {
+        const hasHiringSurge = await checkHiringSurge(page.id);
+        itemMeta[`page-${page.id}`] = {
+          type: 'page',
+          page,
+          keywordResults: [],
+          hasHiringSurge,
+          sendToAI: false
+        };
+        continue;
+      }
+
       const { data: snap } = await supabase
         .from('page_snapshots')
         .select('cleaned_text')
@@ -488,13 +509,17 @@ async function generateSignals() {
       const previousText = snap[1].cleaned_text || '';
       const keywordResults = await getSignalsFromTextKeyword(currentText, previousText);
 
-      let hasHiringSurge = false;
-      if (page.page_type === 'careers') hasHiringSurge = await checkHiringSurge(page.id);
-
       if (currentText && previousText && currentText !== previousText) {
         const itemId = `page-${page.id}`;
         aiItems.push({ id: itemId, type: 'page', text: currentText });
-        itemMeta[itemId] = { type: 'page', page, keywordResults, hasHiringSurge };
+        itemMeta[itemId] = {
+          type: 'page',
+          page,
+          keywordResults,
+          hasHiringSurge: false,
+          sendToAI: true,
+          sourceUrl: page.page_url
+        };
       } else {
         await supabase.from('company_pages').update({ signals_generated: true }).eq('id', page.id);
       }
@@ -507,7 +532,14 @@ async function generateSignals() {
       const text = `${news.title} ${news.snippet}`;
       const itemId = `news-${news.id}`;
       aiItems.push({ id: itemId, type: 'news', text });
-      itemMeta[itemId] = { type: 'news', news, keywordResults: [] };
+      itemMeta[itemId] = {
+        type: 'news',
+        news,
+        keywordResults: [],
+        hasHiringSurge: false,
+        sendToAI: true,
+        sourceUrl: news.article_url
+      };
     }
   }
 
@@ -532,10 +564,9 @@ async function generateSignals() {
     for (const c of companiesData || []) companyById.set(c.id, c);
   }
 
-  // Build company signals map with confidence
   const companySignalsMap = new Map();
 
-  function addSignalToCompany(companyId, companyName, websiteUrl, type, explanation, confidence, sourceObj, words) {
+  function addSignalToCompany(companyId, companyName, websiteUrl, type, explanation, confidence, sourceUrl, sourceLabel, words) {
     if (!companySignalsMap.has(companyId)) {
       companySignalsMap.set(companyId, {
         companyName,
@@ -549,31 +580,73 @@ async function generateSignals() {
     }
     const entry = companySignalsMap.get(companyId);
     entry.signalTypes.add(type);
-    if (explanation) entry.explanations.push(explanation);
-    if (sourceObj) entry.sources.push(sourceObj);
+
+    // Dedupe explanations
+    if (explanation && !entry.explanations.includes(explanation)) {
+      entry.explanations.push(explanation);
+    }
+
+    // Add source (avoid duplicates)
+    const normalized = normalizeUrl(sourceUrl);
+    if (normalized) {
+      const exists = entry.sources.some(s => s.url === normalized);
+      if (!exists) {
+        entry.sources.push({ label: sourceLabel, url: normalized });
+      }
+    }
+
     if (words) words.forEach(w => entry.triggeredWords.add(w));
-    if (confidence > entry.confidence) entry.confidence = confidence; // max confidence
+    if (confidence > entry.confidence) entry.confidence = confidence;
   }
 
   for (const [itemId, meta] of Object.entries(itemMeta)) {
     const company = companyById.get(meta.type === 'page' ? meta.page.company_id : meta.news.company_id);
     if (!company) continue;
 
+    // AI signals
     const aiDecision = aiResult[itemId];
-    if (aiDecision && aiDecision.signals && aiDecision.signals.length > 0) {
-      console.log(`  AI signals for ${itemId}: ${aiDecision.signals.join(', ')} (confidence: ${aiDecision.confidence})`);
+    if (meta.sendToAI && aiDecision && aiDecision.signals && aiDecision.signals.length > 0) {
+      console.log(`  AI signals for ${itemId}: ${aiDecision.signals.join(', ')}`);
+      const sourceUrl = meta.sourceUrl;
+      const sourceLabel = meta.type === 'page'
+        ? `${meta.page.page_type}: ${meta.page.page_url}`
+        : `News: ${meta.news.title}`;
       for (const type of aiDecision.signals) {
-        addSignalToCompany(company.id, company.company_name, company.website_url, type, aiDecision.explanation, aiDecision.confidence, { label: 'source', url: '' }, meta.keywordResults.flatMap(r => r.matchedWords || []));
+        addSignalToCompany(
+          company.id,
+          company.company_name,
+          company.website_url,
+          type,
+          aiDecision.explanation,
+          aiDecision.confidence || 50,
+          sourceUrl,
+          sourceLabel,
+          meta.keywordResults.flatMap(r => r.matchedWords || [])
+        );
       }
     }
 
+    // Hiring surge (numeric, careers pages only)
     if (meta.type === 'page' && meta.hasHiringSurge) {
-      if (!aiDecision || !aiDecision.signals.includes('hiring')) {
-        const { data: snapJob } = await supabase.from('page_snapshots').select('job_count').eq('company_page_id', meta.page.id).order('fetched_at', { ascending: false }).limit(2);
-        const now = snapJob?.[0]?.job_count || 0;
-        const before = snapJob?.[1]?.job_count || 0;
-        addSignalToCompany(company.id, company.company_name, company.website_url, 'hiring', `Job openings increased from ${before} to ${now}.`, 90, { label: 'Careers page', url: meta.page.page_url }, ['hiring_surge']);
-      }
+      const { data: snapJob } = await supabase
+        .from('page_snapshots')
+        .select('job_count')
+        .eq('company_page_id', meta.page.id)
+        .order('fetched_at', { ascending: false })
+        .limit(2);
+      const now = snapJob?.[0]?.job_count || 0;
+      const before = snapJob?.[1]?.job_count || 0;
+      addSignalToCompany(
+        company.id,
+        company.company_name,
+        company.website_url,
+        'hiring',
+        `Job openings increased from ${before} to ${now}.`,
+        90,
+        meta.page.page_url,
+        'Careers page',
+        ['hiring_surge']
+      );
     }
 
     if (meta.type === 'page') {
@@ -581,48 +654,41 @@ async function generateSignals() {
     }
   }
 
-  // Now create signals per user per company (deduplicating and grouping)
-  const createdSignals = new Set(); // for dedup within run
+  // Create signals per user (grouped, capped)
+  const createdSignals = new Set();
 
   for (const [companyId, data] of companySignalsMap.entries()) {
     const signalTypes = [...data.signalTypes];
     if (signalTypes.length === 0) continue;
 
-    // Fetch leads for this company, grouped by user_id
     const { data: leads } = await supabase
       .from('leads')
       .select('id, user_id')
       .eq('company_name', data.companyName)
       .eq('company_website', data.websiteUrl);
-
     if (!leads || leads.length === 0) continue;
 
-    // Group leads by user_id, pick first lead id for each user
     const leadsByUser = new Map();
     for (const lead of leads) {
-      if (!leadsByUser.has(lead.user_id)) {
-        leadsByUser.set(lead.user_id, lead.id);
-      }
+      if (!leadsByUser.has(lead.user_id)) leadsByUser.set(lead.user_id, lead.id);
     }
 
     const description = `Signals detected: ${signalTypes.join(', ')}`;
-    const signalDetail = data.explanations.join(' | ') || description;
+    const uniqueExps = [...new Set(data.explanations.map(e => e.trim()).filter(Boolean))];
+    const signalDetail = uniqueExps.slice(0, 2).join(' · ') || description;
     const sourceUrls = data.sources;
     const triggeredWords = [...data.triggeredWords];
     const confidence = data.confidence || 50;
 
     for (const [userId, leadId] of leadsByUser.entries()) {
-      // Check monthly cap on this lead
       if (await hasRecentSignal(leadId)) continue;
 
-      // Check daily cap for this user
       const todaySignals = await countSignalsToday(userId);
       if (todaySignals >= MAX_SIGNALS_PER_USER_PER_DAY) {
         console.log(`  Skipping user ${userId}, daily cap reached.`);
         continue;
       }
 
-      // Dedup within this run: same user+company
       const dedupKey = `${userId}-${companyId}`;
       if (createdSignals.has(dedupKey)) continue;
       createdSignals.add(dedupKey);
@@ -643,14 +709,13 @@ async function generateSignals() {
       });
 
       if (insertError) {
-        console.error(`  Error inserting signal for user ${userId}: ${insertError.message}`);
+        console.error(`  Error inserting signal: ${insertError.message}`);
       } else {
-        console.log(`  ✅ Signal created for user ${userId} (company ${data.companyName})`);
+        console.log(`  ✅ Signal created for user ${userId} (${data.companyName})`);
       }
     }
   }
 
-  // Delete processed news
   if (newsEntries) {
     const idsToDelete = newsEntries.map(n => n.id);
     await supabase.from('pending_news_signals').delete().in('id', idsToDelete);
