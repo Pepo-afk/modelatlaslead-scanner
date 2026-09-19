@@ -8,7 +8,23 @@ const supabase = createClient(
 
 const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY;
 const CHUNK_SIZE = 10;
-const MAX_SIGNALS_PER_USER_PER_DAY = 5;
+
+// ---------- Per-tier signal limits ----------
+const SIGNAL_LIMITS = {
+  free: 1,
+  starter: 50,
+  growth: 50,
+  pro: Infinity,
+};
+
+async function getUserPlan(userId) {
+  const { data } = await supabase
+    .from('profiles')
+    .select('plan')
+    .eq('id', userId)
+    .maybeSingle();
+  return data?.plan || 'free';
+}
 
 // ---------- WORD WEIGHTS (feedback only) ----------
 let wordWeights = new Map();
@@ -284,6 +300,7 @@ async function hasRecentSignal(leadId) {
   return data && data.length > 0;
 }
 
+// ---------- DAILY CAP COUNT ----------
 async function countSignalsToday(userId) {
   const startOfDay = new Date();
   startOfDay.setHours(0, 0, 0, 0);
@@ -446,7 +463,7 @@ async function applyAIFeedback(itemMeta, aiResult) {
 
 // ---------- MAIN ----------
 async function generateSignals() {
-  console.log('Generating signals (AI only, dedup, real sources)...');
+  console.log('Generating signals (per-tier daily limits)...');
 
   await loadWordWeights();
 
@@ -480,7 +497,6 @@ async function generateSignals() {
   // Process changed pages — skip careers pages from AI text analysis
   if (changedPages) {
     for (const page of changedPages) {
-      // Careers pages only use numeric hiring surge, never AI text
       if (page.page_type === 'careers') {
         const hasHiringSurge = await checkHiringSurge(page.id);
         itemMeta[`page-${page.id}`] = {
@@ -581,12 +597,10 @@ async function generateSignals() {
     const entry = companySignalsMap.get(companyId);
     entry.signalTypes.add(type);
 
-    // Dedupe explanations
     if (explanation && !entry.explanations.includes(explanation)) {
       entry.explanations.push(explanation);
     }
 
-    // Add source (avoid duplicates)
     const normalized = normalizeUrl(sourceUrl);
     if (normalized) {
       const exists = entry.sources.some(s => s.url === normalized);
@@ -603,7 +617,6 @@ async function generateSignals() {
     const company = companyById.get(meta.type === 'page' ? meta.page.company_id : meta.news.company_id);
     if (!company) continue;
 
-    // AI signals
     const aiDecision = aiResult[itemId];
     if (meta.sendToAI && aiDecision && aiDecision.signals && aiDecision.signals.length > 0) {
       console.log(`  AI signals for ${itemId}: ${aiDecision.signals.join(', ')}`);
@@ -626,7 +639,6 @@ async function generateSignals() {
       }
     }
 
-    // Hiring surge (numeric, careers pages only)
     if (meta.type === 'page' && meta.hasHiringSurge) {
       const { data: snapJob } = await supabase
         .from('page_snapshots')
@@ -654,7 +666,7 @@ async function generateSignals() {
     }
   }
 
-  // Create signals per user (grouped, capped)
+  // Create signals per user (grouped, per-tier limits)
   const createdSignals = new Set();
 
   for (const [companyId, data] of companySignalsMap.entries()) {
@@ -681,12 +693,19 @@ async function generateSignals() {
     const confidence = data.confidence || 50;
 
     for (const [userId, leadId] of leadsByUser.entries()) {
+      // 20-day monthly cap
       if (await hasRecentSignal(leadId)) continue;
 
-      const todaySignals = await countSignalsToday(userId);
-      if (todaySignals >= MAX_SIGNALS_PER_USER_PER_DAY) {
-        console.log(`  Skipping user ${userId}, daily cap reached.`);
-        continue;
+      // Per-tier daily cap
+      const userPlan = await getUserPlan(userId);
+      const dailyLimit = SIGNAL_LIMITS[userPlan] ?? 1;
+
+      if (dailyLimit !== Infinity) {
+        const todaySignals = await countSignalsToday(userId);
+        if (todaySignals >= dailyLimit) {
+          console.log(`  Skipping user ${userId} (plan: ${userPlan}, limit: ${dailyLimit}), cap reached.`);
+          continue;
+        }
       }
 
       const dedupKey = `${userId}-${companyId}`;
