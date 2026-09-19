@@ -9,12 +9,12 @@ const supabase = createClient(
 const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY;
 const CHUNK_SIZE = 10;
 
-// ---------- Per-tier signal limits ----------
+// ---------- Per-tier daily signal limits ----------
 const SIGNAL_LIMITS = {
   free: 1,
-  starter: 50,
-  growth: 50,
-  pro: Infinity,
+  starter: 30,
+  growth: 60,
+  pro: 200,
 };
 
 async function getUserPlan(userId) {
@@ -286,20 +286,6 @@ async function checkHiringSurge(pageId) {
   return (prev !== null && curr !== null && (curr - prev) >= 5);
 }
 
-// ---------- MONTHLY CAP ----------
-async function hasRecentSignal(leadId) {
-  if (process.env.DISABLE_CAP === 'true') return false;
-  const twentyDaysAgo = new Date();
-  twentyDaysAgo.setDate(twentyDaysAgo.getDate() - 20);
-  const { data } = await supabase
-    .from('signals')
-    .select('id')
-    .eq('lead_id', leadId)
-    .gte('detected_at', twentyDaysAgo.toISOString())
-    .limit(1);
-  return data && data.length > 0;
-}
-
 // ---------- DAILY CAP COUNT ----------
 async function countSignalsToday(userId) {
   const startOfDay = new Date();
@@ -463,7 +449,7 @@ async function applyAIFeedback(itemMeta, aiResult) {
 
 // ---------- MAIN ----------
 async function generateSignals() {
-  console.log('Generating signals (per-tier daily limits)...');
+  console.log('Generating signals (per-tier daily limits, no 20-day cap)...');
 
   await loadWordWeights();
 
@@ -666,7 +652,7 @@ async function generateSignals() {
     }
   }
 
-  // Create signals per user (grouped, per-tier limits)
+  // Create signals per user (grouped, per-tier daily limits, no 20-day cap)
   const createdSignals = new Set();
 
   for (const [companyId, data] of companySignalsMap.entries()) {
@@ -693,19 +679,14 @@ async function generateSignals() {
     const confidence = data.confidence || 50;
 
     for (const [userId, leadId] of leadsByUser.entries()) {
-      // 20-day monthly cap
-      if (await hasRecentSignal(leadId)) continue;
-
-      // Per-tier daily cap
+      // Per-tier daily cap (no 20-day cap anymore)
       const userPlan = await getUserPlan(userId);
       const dailyLimit = SIGNAL_LIMITS[userPlan] ?? 1;
 
-      if (dailyLimit !== Infinity) {
-        const todaySignals = await countSignalsToday(userId);
-        if (todaySignals >= dailyLimit) {
-          console.log(`  Skipping user ${userId} (plan: ${userPlan}, limit: ${dailyLimit}), cap reached.`);
-          continue;
-        }
+      const todaySignals = await countSignalsToday(userId);
+      if (todaySignals >= dailyLimit) {
+        console.log(`  Skipping user ${userId} (plan: ${userPlan}, limit: ${dailyLimit}), daily cap reached.`);
+        continue;
       }
 
       const dedupKey = `${userId}-${companyId}`;
