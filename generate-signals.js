@@ -9,7 +9,6 @@ const supabase = createClient(
 const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY;
 const CHUNK_SIZE = 10;
 
-// ---------- Per-tier daily signal limits ----------
 const SIGNAL_LIMITS = {
   free: 1,
   starter: 30,
@@ -26,7 +25,7 @@ async function getUserPlan(userId) {
   return data?.plan || 'free';
 }
 
-// ---------- WORD WEIGHTS (feedback only) ----------
+// ---------- WORD WEIGHTS ----------
 let wordWeights = new Map();
 
 async function loadWordWeights() {
@@ -74,7 +73,7 @@ function normalizeUrl(url) {
   return 'https://' + trimmed;
 }
 
-// ---------- KEYWORD DETECTION (feedback only) ----------
+// ---------- KEYWORD DETECTION ----------
 async function detectFunding(text) {
   const lower = text.toLowerCase();
   const keywords = [
@@ -330,7 +329,7 @@ async function callOpenRouter(prompt, retries = 5) {
 
       if (response.status === 429) {
         const waitMs = 20000 * attempt;
-        console.warn(`  Rate limited, waiting ${waitMs/1000}s...`);
+        console.warn(`  Rate limited, waiting ${waitMs / 1000}s...`);
         await new Promise(resolve => setTimeout(resolve, waitMs));
         continue;
       }
@@ -373,7 +372,7 @@ async function batchDetectSignals(items) {
   for (let i = 0; i < items.length; i += CHUNK_SIZE) {
     const chunk = items.slice(i, i + CHUNK_SIZE);
     const prompt = buildBatchPrompt(chunk);
-    console.log(`  Processing chunk ${i/CHUNK_SIZE + 1}...`);
+    console.log(`  Processing chunk ${i / CHUNK_SIZE + 1}...`);
     try {
       const chunkResult = await callOpenRouter(prompt);
       Object.assign(combinedResult, chunkResult);
@@ -387,7 +386,7 @@ async function batchDetectSignals(items) {
 function buildBatchPrompt(items) {
   let prompt = "You are an assistant that reads web page text and detects business signals a B2B salesperson would care about.\n\n";
   prompt += "Signals: funding, hiring, launch, partnership, expansion, rebranding, leadership, growth.\n";
-  prompt += "For each item, return a JSON object with: \"signals\" (array of strings), \"explanation\" (a specific, human sentence describing what actually happened — include names, numbers, and facts when present), and \"confidence\" (0-100).\n";
+  prompt += "For each item, return a JSON object with: \"signals\" (array of strings), \"explanation\" (a specific, human sentence describing what actually happened, include names, numbers, and facts when present), and \"confidence\" (0-100).\n";
   prompt += "Be specific. Do not repeat the same idea. If a company appears twice, return the more informative explanation. If the text is just a menu, a historical timeline, an educational article, a job listing, or boilerplate, return empty signals.\n\n";
 
   for (const item of items) {
@@ -449,7 +448,7 @@ async function applyAIFeedback(itemMeta, aiResult) {
 
 // ---------- MAIN ----------
 async function generateSignals() {
-  console.log('Generating signals (per-tier daily limits, no 20-day cap)...');
+  console.log('Generating signals (per-tier daily limits, featured + per-user)...');
 
   await loadWordWeights();
 
@@ -480,7 +479,7 @@ async function generateSignals() {
   const aiItems = [];
   const itemMeta = {};
 
-  // Process changed pages — skip careers pages from AI text analysis
+  // Changed pages
   if (changedPages) {
     for (const page of changedPages) {
       if (page.page_type === 'careers') {
@@ -528,7 +527,7 @@ async function generateSignals() {
     }
   }
 
-  // Process news
+  // News
   if (newsEntries) {
     for (const news of newsEntries) {
       const text = `${news.title} ${news.snippet}`;
@@ -551,7 +550,7 @@ async function generateSignals() {
     await applyAIFeedback(itemMeta, aiResult);
   }
 
-  // Batch company lookup
+  // Batch company lookup (now includes is_featured)
   const companyIds = new Set();
   for (const meta of Object.values(itemMeta)) {
     if (meta.type === 'page') companyIds.add(meta.page.company_id);
@@ -561,7 +560,7 @@ async function generateSignals() {
   if (companyIds.size > 0) {
     const { data: companiesData } = await supabase
       .from('companies')
-      .select('id, company_name, website_url')
+      .select('id, company_name, website_url, is_featured')
       .in('id', Array.from(companyIds));
     for (const c of companiesData || []) companyById.set(c.id, c);
   }
@@ -652,13 +651,48 @@ async function generateSignals() {
     }
   }
 
-  // Create signals per user (grouped, per-tier daily limits, no 20-day cap)
+  // Create signals per user AND featured signals for the public feed
   const createdSignals = new Set();
 
   for (const [companyId, data] of companySignalsMap.entries()) {
     const signalTypes = [...data.signalTypes];
     if (signalTypes.length === 0) continue;
 
+    const description = `Signals detected: ${signalTypes.join(', ')}`;
+    const uniqueExps = [...new Set(data.explanations.map(e => e.trim()).filter(Boolean))];
+    const signalDetail = uniqueExps.slice(0, 2).join(' · ') || description;
+    const sourceUrls = data.sources;
+    const triggeredWords = [...data.triggeredWords];
+    const confidence = data.confidence || 50;
+
+    const companyRow = companyById.get(companyId);
+    const isFeatured = companyRow?.is_featured === true;
+
+    // 1. Featured signal for public feed (user_id null, no email)
+    if (isFeatured) {
+      const { error: featuredErr } = await supabase.from('signals').insert({
+        lead_id: null,
+        user_id: null,
+        type: 'multi',
+        description,
+        signal_detail: signalDetail,
+        source_url: data.websiteUrl,
+        source_urls: sourceUrls,
+        triggered_words: triggeredWords,
+        confidence,
+        email_status: 'no_email',
+        email_subject: `Update: ${data.companyName}`,
+        scan_run_id: scanRunId,
+        is_hidden: false
+      });
+      if (featuredErr) {
+        console.error(`  Error inserting featured signal for ${data.companyName}: ${featuredErr.message}`);
+      } else {
+        console.log(`  ⭐ Featured signal created: ${data.companyName}`);
+      }
+    }
+
+    // 2. Per-user signals (per-tier daily caps)
     const { data: leads } = await supabase
       .from('leads')
       .select('id, user_id')
@@ -671,15 +705,7 @@ async function generateSignals() {
       if (!leadsByUser.has(lead.user_id)) leadsByUser.set(lead.user_id, lead.id);
     }
 
-    const description = `Signals detected: ${signalTypes.join(', ')}`;
-    const uniqueExps = [...new Set(data.explanations.map(e => e.trim()).filter(Boolean))];
-    const signalDetail = uniqueExps.slice(0, 2).join(' · ') || description;
-    const sourceUrls = data.sources;
-    const triggeredWords = [...data.triggeredWords];
-    const confidence = data.confidence || 50;
-
     for (const [userId, leadId] of leadsByUser.entries()) {
-      // Per-tier daily cap (no 20-day cap anymore)
       const userPlan = await getUserPlan(userId);
       const dailyLimit = SIGNAL_LIMITS[userPlan] ?? 1;
 
