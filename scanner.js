@@ -13,9 +13,10 @@ const supabase = createClient(
 
 // ---------- TUNABLES ----------
 const MAX_PAGES_PER_COMPANY = 3;        // careers, blog, press/news
-const COMPANY_CONCURRENCY = 18;         // companies processed in parallel
-const GLOBAL_HTTP_CONCURRENCY = 40;     // total concurrent HTTP requests across ALL companies
+const COMPANY_CONCURRENCY = 25;         // companies processed in parallel
+const GLOBAL_HTTP_CONCURRENCY = 80;     // total concurrent HTTP requests
 const FETCH_TIMEOUT_MS = 5000;
+const SCAN_BATCH_SIZE = 4000;           // companies per day (rotation batch)
 
 const USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
 
@@ -26,7 +27,7 @@ const PAGE_TYPE_KEYWORDS = {
   blog: ['blog', 'insights', 'articles', 'stories', 'resources/blog'],
   press: ['press', 'newsroom', 'media', 'news'],
 };
-const CATEGORY_ORDER = ['careers', 'blog', 'press']; // priority order when picking pages
+const CATEGORY_ORDER = ['careers', 'blog', 'press'];
 
 const URL_BLACKLIST = [
   'linkedin.com',
@@ -40,7 +41,7 @@ function isBlacklisted(url) {
   return URL_BLACKLIST.some(term => lower.includes(term));
 }
 
-// ---------- SHARED HTTP CLIENT (keep-alive, reused across every request) ----------
+// ---------- SHARED HTTP CLIENT ----------
 const httpAgent = new http.Agent({ keepAlive: true, maxSockets: GLOBAL_HTTP_CONCURRENCY });
 const httpsAgent = new https.Agent({ keepAlive: true, maxSockets: GLOBAL_HTTP_CONCURRENCY });
 
@@ -56,7 +57,7 @@ const httpClient = axios.create({
   },
 });
 
-// ---------- GLOBAL SEMAPHORE (caps TOTAL concurrent HTTP requests across every company) ----------
+// ---------- GLOBAL SEMAPHORE ----------
 class Semaphore {
   constructor(max) {
     this.max = max;
@@ -118,7 +119,7 @@ function countJobs(html) {
   return maxCount;
 }
 
-// ---------- LINK SCORING (Option B: homepage used only for link discovery, never stored/analyzed) ----------
+// ---------- LINK SCORING ----------
 function scoreLinkForCategory(path, keywords) {
   const lower = path.toLowerCase();
   let best = -1;
@@ -134,7 +135,7 @@ function scoreLinkForCategory(path, keywords) {
 
 function pickCandidatePages(links, baseUrl) {
   const hostname = new URL(baseUrl).hostname;
-  const bestByCategory = {}; // category -> { url, score }
+  const bestByCategory = {};
 
   for (const href of links) {
     let url;
@@ -169,7 +170,7 @@ function pickCandidatePages(links, baseUrl) {
   return selected.slice(0, MAX_PAGES_PER_COMPANY);
 }
 
-// ---------- CONCURRENCY HELPER (company-level pool) ----------
+// ---------- CONCURRENCY HELPER ----------
 async function concurrentMap(items, limit, asyncFn) {
   let index = 0;
   const results = new Array(items.length);
@@ -190,7 +191,7 @@ async function scanCompany(company, scanRunId) {
   if (!website || website.toLowerCase().includes('linkedin.com')) return;
   if (!website.startsWith('http')) website = 'https://' + website;
 
-  // 1. Homepage fetch — link discovery ONLY. Not stored, not analyzed for signals.
+  // 1. Homepage fetch, link discovery only
   const homeRes = await fetchWithLimit(website);
   if (!homeRes || homeRes.status >= 400 || !homeRes.data) return;
 
@@ -207,9 +208,9 @@ async function scanCompany(company, scanRunId) {
     return;
   }
 
-  if (candidates.length === 0) return; // nothing worth scanning for this company
+  if (candidates.length === 0) return;
 
-  // 2. Load existing active pages for this company (1 query)
+  // 2. Load existing active pages
   const { data: existingPages } = await supabase
     .from('company_pages')
     .select('id, page_url, page_type, etag, last_modified')
@@ -217,7 +218,7 @@ async function scanCompany(company, scanRunId) {
     .eq('is_active', true);
   const existingMap = new Map((existingPages || []).map(p => [p.page_url, p]));
 
-  // 3. Load latest snapshot hash/job_count for existing candidate pages (1 query)
+  // 3. Load latest snapshot hash/job_count
   const existingCandidateIds = candidates
     .map(c => existingMap.get(c.url)?.id)
     .filter(Boolean);
@@ -236,7 +237,7 @@ async function scanCompany(company, scanRunId) {
     }
   }
 
-  // 4. Fetch each candidate page (conditional GET if we already have an etag/last-modified for it)
+  // 4. Conditional fetch of each candidate page
   const fetchResults = await Promise.all(candidates.map(async (candidate) => {
     const existing = existingMap.get(candidate.url);
     const conditionalHeaders = {};
@@ -255,7 +256,11 @@ async function scanCompany(company, scanRunId) {
     const etag = res.headers?.etag || null;
     const lastModified = res.headers?.['last-modified'] || null;
 
-    return { candidate, existing, status: 'fetched', cleanedText, textHash, jobCount, etag, lastModified };
+    return {
+      candidate, existing, status: 'fetched',
+      cleanedText, textHash, jobCount, etag, lastModified,
+      httpStatus: res.status,
+    };
   }));
 
   // 5. Build batched writes
@@ -268,11 +273,7 @@ async function scanCompany(company, scanRunId) {
     const { candidate, existing, status } = result;
     seenPageUrls.add(candidate.url);
 
-    if (status === 'error') {
-      // Transient failure: leave last_status alone so a previously "changed"
-      // page awaiting signal generation isn't silently cleared.
-      continue;
-    }
+    if (status === 'error') continue;
 
     if (status === 'not_modified') {
       if (existing) {
@@ -290,7 +291,7 @@ async function scanCompany(company, scanRunId) {
     }
 
     // status === 'fetched'
-    const { cleanedText, textHash, jobCount, etag, lastModified } = result;
+    const { cleanedText, textHash, jobCount, etag, lastModified, httpStatus } = result;
     const prevSnap = existing ? latestSnapByPage.get(existing.id) : null;
     const contentChanged = !prevSnap || prevSnap.text_hash !== textHash;
 
@@ -301,7 +302,7 @@ async function scanCompany(company, scanRunId) {
         page_type: candidate.pageType,
         is_active: true,
         last_status: 'pending',
-        _pendingSnapshot: { cleanedText, textHash, jobCount },
+        _pendingSnapshot: { cleanedText, textHash, jobCount, httpStatus },
         _pendingUpdate: { etag, lastModified, jobCount },
       });
     } else {
@@ -325,12 +326,13 @@ async function scanCompany(company, scanRunId) {
           cleaned_text: cleanedText,
           text_hash: textHash,
           job_count: jobCount,
+          http_status: httpStatus,
         });
       }
     }
   }
 
-  // 6. Insert brand-new pages, then wire up their generated ids for snapshot/update rows
+  // 6. Insert new pages, wire up IDs
   if (newPageRows.length > 0) {
     const insertPayload = newPageRows.map(({ _pendingSnapshot, _pendingUpdate, ...row }) => row);
     const { data: inserted, error: insertErr } = await supabase
@@ -349,6 +351,7 @@ async function scanCompany(company, scanRunId) {
           cleaned_text: row._pendingSnapshot.cleanedText,
           text_hash: row._pendingSnapshot.textHash,
           job_count: row._pendingSnapshot.jobCount,
+          http_status: row._pendingSnapshot.httpStatus,
         });
         pageUpsertRows.push({
           id,
@@ -357,7 +360,7 @@ async function scanCompany(company, scanRunId) {
           page_type: row.page_type,
           is_active: true,
           last_scan_at: new Date().toISOString(),
-          last_status: 'changed', // first-ever snapshot: treat as changed so signals get generated
+          last_status: 'changed',
           signals_generated: false,
           job_count: row._pendingUpdate.jobCount,
           etag: row._pendingUpdate.etag,
@@ -367,7 +370,7 @@ async function scanCompany(company, scanRunId) {
     }
   }
 
-  // 7. Pages that used to be linked from the homepage but aren't anymore
+  // 7. Pages no longer linked
   for (const [url, page] of existingMap.entries()) {
     if (!seenPageUrls.has(url)) {
       pageUpsertRows.push({
@@ -381,7 +384,7 @@ async function scanCompany(company, scanRunId) {
     }
   }
 
-  // 8. Flush batched writes — constant number of round trips regardless of page count
+  // 8. Flush writes
   if (snapshotRows.length > 0) {
     await supabase.from('page_snapshots').insert(snapshotRows);
   }
@@ -397,28 +400,39 @@ async function scanCompany(company, scanRunId) {
 
 // ---------- MAIN ----------
 async function main() {
-  console.log('Starting fast scan (concurrent, path-limited, conditional GET)...');
-  const { data: run } = await supabase
+  console.log(`Starting rotation scan (batch size: ${SCAN_BATCH_SIZE})...`);
+
+  const { data: run, error: runErr } = await supabase
     .from('scan_runs')
     .insert({ status: 'running' })
     .select('id')
     .single();
+  if (runErr || !run) {
+    console.error('Could not create scan_run:', runErr?.message);
+    process.exit(1);
+  }
   const scanRunId = run.id;
 
   const { data: companies, error } = await supabase
     .from('companies')
     .select('id, company_name, website_url')
     .not('website_url', 'is', null)
-    .not('website_url', 'ilike', '%linkedin.com%');
+    .not('website_url', 'ilike', '%linkedin.com%')
+    .order('last_scanned_at', { ascending: true, nullsFirst: true })
+    .limit(SCAN_BATCH_SIZE);
 
   if (error || !companies || companies.length === 0) {
     console.log('No companies to scan.');
-    await supabase.from('scan_runs').update({ status: 'completed', companies_scanned: 0 }).eq('id', scanRunId);
+    await supabase
+      .from('scan_runs')
+      .update({ status: 'completed', companies_scanned: 0 })
+      .eq('id', scanRunId);
     return;
   }
 
-  console.log(`Scanning ${companies.length} companies (concurrency: ${COMPANY_CONCURRENCY} companies / ${GLOBAL_HTTP_CONCURRENCY} HTTP requests)...`);
+  console.log(`Scanning ${companies.length} companies (companies concurrency: ${COMPANY_CONCURRENCY}, HTTP concurrency: ${GLOBAL_HTTP_CONCURRENCY})...`);
 
+  const scannedIds = [];
   let companiesScanned = 0;
   let errors = 0;
 
@@ -429,15 +443,30 @@ async function main() {
     } catch (e) {
       errors++;
       console.error(`Company ${company.company_name} failed: ${e.message}`);
+    } finally {
+      scannedIds.push(company.id);
     }
   });
+
+  // Batch update last_scanned_at so rotation advances
+  const nowIso = new Date().toISOString();
+  const CHUNK = 500;
+  for (let i = 0; i < scannedIds.length; i += CHUNK) {
+    const slice = scannedIds.slice(i, i + CHUNK);
+    const { error: updErr } = await supabase
+      .from('companies')
+      .update({ last_scanned_at: nowIso })
+      .in('id', slice);
+    if (updErr) console.error('Failed to update last_scanned_at chunk:', updErr.message);
+  }
 
   const { count } = await supabase
     .from('page_snapshots')
     .select('id', { count: 'exact', head: true })
     .eq('scan_run_id', scanRunId);
 
-  await supabase.from('scan_runs')
+  await supabase
+    .from('scan_runs')
     .update({
       finished_at: new Date().toISOString(),
       status: 'completed',
