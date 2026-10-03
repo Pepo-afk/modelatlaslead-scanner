@@ -346,12 +346,16 @@ async function callOpenRouter(prompt, retries = 5) {
 
       const data = await response.json();
       const content = data?.choices?.[0]?.message?.content;
-      if (!content) throw new Error('no content in AI response');
+      if (!content) {
+        console.error('  RAW RESPONSE (no content):', JSON.stringify(data).slice(0, 800));
+        throw new Error('no content in AI response');
+      }
 
       try {
         return extractJsonObject(content);
       } catch (parseErr) {
         console.warn('  JSON parse failed, retrying...');
+        console.warn('  RAW CONTENT (first 400 chars):', String(content).slice(0, 400));
         if (attempt < retries) {
           await new Promise(resolve => setTimeout(resolve, 10000));
           continue;
@@ -385,9 +389,16 @@ async function batchDetectSignals(items) {
 
 function buildBatchPrompt(items) {
   let prompt = "You are an assistant that reads web page text and detects business signals a B2B salesperson would care about.\n\n";
-  prompt += "Signals: funding, hiring, launch, partnership, expansion, rebranding, leadership, growth.\n";
-  prompt += "For each item, return a JSON object with: \"signals\" (array of strings), \"explanation\" (a specific, human sentence describing what actually happened, include names, numbers, and facts when present), and \"confidence\" (0-100).\n";
-  prompt += "Be specific. Do not repeat the same idea. If a company appears twice, return the more informative explanation. If the text is just a menu, a historical timeline, an educational article, a job listing, or boilerplate, return empty signals.\n\n";
+  prompt += "Valid signals: funding, hiring, launch, partnership, expansion, rebranding, leadership, growth.\n\n";
+  prompt += "STRICT RULES:\n";
+  prompt += "1. A signal must be a specific new event with a date or clear recent timing. Not a description of the company.\n";
+  prompt += "2. Ignore company descriptions, About pages, and press-kit copy. Statements like 'X powers 3.4 million businesses', 'X has 9,000 integrations', 'X was founded in 2012', 'X is a fully remote team', or 'X is a leader in Y' are NOT signals. They are marketing filler.\n";
+  prompt += "3. Ignore statements about the company's size, customer count, team size, founding year, awards, or general status unless accompanied by a specific new event with a date.\n";
+  prompt += "4. 'X powers 3.4M businesses' is not a signal. 'X was named a Meta connector on Sept 29' is a signal.\n";
+  prompt += "5. If two items refer to the same event for the same company, return the signal in the most informative item and return empty signals for the duplicate.\n";
+  prompt += "6. If the text is a menu, a historical timeline, an educational article, a job listing, boilerplate, or a press-kit blurb, return empty signals.\n";
+  prompt += "7. Be specific. Do not repeat the same idea.\n\n";
+  prompt += "For each item, return a JSON object with: \"signals\" (array of strings from the valid list), \"explanation\" (a specific, human sentence describing what actually happened, include names, numbers, and facts when present), and \"confidence\" (0-100).\n\n";
 
   for (const item of items) {
     const id = item.id;
@@ -479,7 +490,6 @@ async function generateSignals() {
   const aiItems = [];
   const itemMeta = {};
 
-  // Changed pages
   if (changedPages) {
     for (const page of changedPages) {
       if (page.page_type === 'careers') {
@@ -527,7 +537,6 @@ async function generateSignals() {
     }
   }
 
-  // News
   if (newsEntries) {
     for (const news of newsEntries) {
       const text = `${news.title} ${news.snippet}`;
@@ -550,7 +559,6 @@ async function generateSignals() {
     await applyAIFeedback(itemMeta, aiResult);
   }
 
-  // Batch company lookup (now includes is_featured)
   const companyIds = new Set();
   for (const meta of Object.values(itemMeta)) {
     if (meta.type === 'page') companyIds.add(meta.page.company_id);
@@ -651,7 +659,6 @@ async function generateSignals() {
     }
   }
 
-  // Create signals per user AND featured signals for the public feed
   const createdSignals = new Set();
 
   for (const [companyId, data] of companySignalsMap.entries()) {
@@ -668,7 +675,6 @@ async function generateSignals() {
     const companyRow = companyById.get(companyId);
     const isFeatured = companyRow?.is_featured === true;
 
-    // 1. Featured signal for public feed (user_id null, no email)
     if (isFeatured) {
       const { error: featuredErr } = await supabase.from('signals').insert({
         lead_id: null,
@@ -688,11 +694,10 @@ async function generateSignals() {
       if (featuredErr) {
         console.error(`  Error inserting featured signal for ${data.companyName}: ${featuredErr.message}`);
       } else {
-        console.log(`  ⭐ Featured signal created: ${data.companyName}`);
+        console.log(`  Featured signal created: ${data.companyName}`);
       }
     }
 
-    // 2. Per-user signals (per-tier daily caps)
     const { data: leads } = await supabase
       .from('leads')
       .select('id, user_id')
@@ -737,7 +742,7 @@ async function generateSignals() {
       if (insertError) {
         console.error(`  Error inserting signal: ${insertError.message}`);
       } else {
-        console.log(`  ✅ Signal created for user ${userId} (${data.companyName})`);
+        console.log(`  Signal created for user ${userId} (${data.companyName})`);
       }
     }
   }
