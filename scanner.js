@@ -13,11 +13,12 @@ const supabase = createClient(
 
 // ---------- TUNABLES ----------
 const MAX_PAGES_PER_COMPANY = 3;
-const COMPANY_CONCURRENCY = 25;
-const GLOBAL_HTTP_CONCURRENCY = 80;
+const COMPANY_CONCURRENCY = 15;
+const GLOBAL_HTTP_CONCURRENCY = 40;
 const FETCH_TIMEOUT_MS = 5000;
-const SCAN_BATCH_SIZE = 5000;
-const DB_PAGE_SIZE = 1000;
+const SCAN_BATCH_SIZE = 5000;      // total companies per run
+const CHUNK_SIZE = 500;            // companies processed at a time (memory bound)
+const DB_PAGE_SIZE = 1000;         // Supabase per-query row cap
 
 const USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
 
@@ -223,6 +224,7 @@ async function scanCompany(company, scanRunId) {
       if (href) links.push(href);
     });
     candidates = pickCandidatePages(links, website);
+    homeRes.data = null; // release the raw HTML
   } catch {
     return;
   }
@@ -272,11 +274,13 @@ async function scanCompany(company, scanRunId) {
     const etag = res.headers?.etag || null;
     const lastModified = res.headers?.['last-modified'] || null;
 
-    return {
+    const result = {
       candidate, existing, status: 'fetched',
       cleanedText, textHash, jobCount, etag, lastModified,
       httpStatus: res.status,
     };
+    res.data = null;
+    return result;
   }));
 
   const newPageRows = [];
@@ -346,6 +350,9 @@ async function scanCompany(company, scanRunId) {
     }
   }
 
+  // Clear results array reference to free memory early
+  fetchResults.length = 0;
+
   if (newPageRows.length > 0) {
     const insertPayload = newPageRows.map(({ _pendingSnapshot, _pendingUpdate, ...row }) => row);
     const { data: inserted, error: insertErr } = await supabase
@@ -411,7 +418,7 @@ async function scanCompany(company, scanRunId) {
 
 // ---------- MAIN ----------
 async function main() {
-  console.log(`Starting rotation scan (batch size: ${SCAN_BATCH_SIZE})...`);
+  console.log(`Starting rotation scan (batch size: ${SCAN_BATCH_SIZE}, chunk size: ${CHUNK_SIZE})...`);
 
   const { data: run, error: runErr } = await supabase
     .from('scan_runs')
@@ -440,23 +447,38 @@ async function main() {
   const scannedIds = [];
   let companiesScanned = 0;
   let errors = 0;
+  const totalChunks = Math.ceil(companies.length / CHUNK_SIZE);
 
-  await concurrentMap(companies, COMPANY_CONCURRENCY, async (company) => {
-    try {
-      await scanCompany(company, scanRunId);
-      companiesScanned++;
-    } catch (e) {
-      errors++;
-      console.error(`Company ${company.company_name} failed: ${e.message}`);
-    } finally {
-      scannedIds.push(company.id);
-    }
-  });
+  for (let i = 0; i < companies.length; i += CHUNK_SIZE) {
+    const chunkNumber = Math.floor(i / CHUNK_SIZE) + 1;
+    const slice = companies.slice(i, i + CHUNK_SIZE);
+    const memBefore = Math.round(process.memoryUsage().heapUsed / 1024 / 1024);
+    console.log(`Chunk ${chunkNumber}/${totalChunks} (${slice.length} companies, heap ${memBefore}MB)`);
+
+    await concurrentMap(slice, COMPANY_CONCURRENCY, async (company) => {
+      try {
+        await scanCompany(company, scanRunId);
+        companiesScanned++;
+      } catch (e) {
+        errors++;
+        console.error(`Company ${company.company_name} failed: ${e.message}`);
+      } finally {
+        scannedIds.push(company.id);
+      }
+    });
+
+    const memAfter = Math.round(process.memoryUsage().heapUsed / 1024 / 1024);
+    console.log(`  Chunk ${chunkNumber} done. Heap: ${memAfter}MB`);
+
+    if (typeof global.gc === 'function') global.gc();
+  }
+
+  console.log(`All chunks done. Updating last_scanned_at for ${scannedIds.length} companies...`);
 
   const nowIso = new Date().toISOString();
-  const CHUNK = 500;
-  for (let i = 0; i < scannedIds.length; i += CHUNK) {
-    const slice = scannedIds.slice(i, i + CHUNK);
+  const UPDATE_CHUNK = 500;
+  for (let i = 0; i < scannedIds.length; i += UPDATE_CHUNK) {
+    const slice = scannedIds.slice(i, i + UPDATE_CHUNK);
     const { error: updErr } = await supabase
       .from('companies')
       .update({ last_scanned_at: nowIso })
@@ -486,4 +508,4 @@ async function main() {
 main().catch(err => {
   console.error('Fatal error:', err);
   process.exit(1);
-});
+}); 
