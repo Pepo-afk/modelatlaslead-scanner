@@ -1,221 +1,166 @@
 const { createClient } = require('@supabase/supabase-js');
+const Parser = require('rss-parser');
+const parser = new Parser();
 
 const supabase = createClient(
   process.env.SUPABASE_URL,
   process.env.SUPABASE_SERVICE_KEY,
-  {
-    auth: { persistSession: false },
-    realtime: { enabled: false }
-  }
+  { auth: { persistSession: false } }
 );
 
-const RESEND_API_KEY = process.env.RESEND_API_KEY;
-const FROM_DOMAIN = 'hello@modelatlas.net';
-const DEFAULT_FROM_NAME = 'ModelAtlas';
+const MAX_ARTICLE_AGE_DAYS = 7;
+const NEWS_BATCH_SIZE = 5000;
+const NEWS_CONCURRENCY = 20;
+const DB_PAGE_SIZE = 1000;
 
-function getFirstName(fullName) {
-  if (!fullName) return 'there';
-  return fullName.trim().split(' ')[0];
+function isArticleRecent(pubDate) {
+  if (!pubDate) return true;
+  const articleDate = new Date(pubDate);
+  const cutoff = new Date();
+  cutoff.setDate(cutoff.getDate() - MAX_ARTICLE_AGE_DAYS);
+  return articleDate >= cutoff;
 }
 
-async function getProfile(userId) {
-  const { data: profile } = await supabase
-    .from('profiles')
-    .select('plan, sender_name, ai_enabled, email, notify_signals, auto_pilot')
-    .eq('id', userId)
-    .single();
-  return profile || {
-    plan: 'free',
-    sender_name: DEFAULT_FROM_NAME,
-    ai_enabled: false,
-    email: null,
-    notify_signals: true,
-    auto_pilot: false
-  };
+async function getProcessedUrls(companyId) {
+  const { data } = await supabase
+    .from('news_articles')
+    .select('article_url')
+    .eq('company_id', companyId);
+  return new Set((data || []).map(row => row.article_url));
 }
 
-async function generateAIEmail(firstName, company, signalDetail, userContext, senderName, userId) {
+async function markArticleProcessed(companyId, articleUrl, title, pubDate) {
+  await supabase.from('news_articles').insert({
+    company_id: companyId,
+    article_url: articleUrl,
+    title,
+    pub_date: pubDate ? new Date(pubDate).toISOString() : null,
+  }).select('id').maybeSingle();
+}
+
+async function scanCompanyNews(company) {
+  const name = company.company_name;
+  const query = encodeURIComponent(`"${name}" (funding OR hiring OR launch OR partnership OR expansion OR rebranding OR leadership)`);
+  const rssUrl = `https://news.google.com/rss/search?q=${query}&hl=en&gl=US&ceid=US:en`;
+
+  let feed;
   try {
-    const response = await fetch('https://modelatlas.net/api/generate-ai-email.php', {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${process.env.SERVER_API_KEY}`,
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({
-        lead_first_name: firstName,
-        company_name: company,
-        signal_detail: signalDetail,
-        user_context: userContext || '',
-        sender_name: senderName,
-        user_id: userId
-      })
-    });
-    if (!response.ok) throw new Error(`AI relay failed: ${await response.text()}`);
-    const data = await response.json();
-    return data.email_body;
+    feed = await parser.parseURL(rssUrl);
   } catch (err) {
-    console.error('  AI generation error:', err.message);
-    return null;
+    console.log(`  Failed to fetch RSS for ${name}: ${err.message}`);
+    return;
+  }
+
+  if (!feed.items || feed.items.length === 0) return;
+
+  const processedUrls = await getProcessedUrls(company.id);
+  let newArticles = 0;
+
+  for (const item of feed.items) {
+    const link = item.link;
+    if (!link) continue;
+    if (processedUrls.has(link)) continue;
+    if (!isArticleRecent(item.pubDate)) continue;
+
+    const title = item.title || '';
+    const snippet = item.contentSnippet || item.content || '';
+
+    const combinedText = `${title} ${snippet}`.toLowerCase();
+    const companyNameLower = company.company_name.toLowerCase();
+    const escaped = companyNameLower.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const namePattern = new RegExp(`\\b${escaped}\\b`, 'i');
+    if (!namePattern.test(combinedText)) {
+      await markArticleProcessed(company.id, link, title, item.pubDate);
+      continue;
+    }
+
+    const { error: insertErr } = await supabase.from('pending_news_signals').insert({
+      company_id: company.id,
+      article_url: link,
+      title,
+      snippet,
+      pub_date: item.pubDate ? new Date(item.pubDate).toISOString() : null,
+    });
+
+    if (insertErr) {
+      console.error(`    Failed to insert article: ${insertErr.message}`);
+    } else {
+      newArticles++;
+    }
+
+    await markArticleProcessed(company.id, link, title, item.pubDate);
+  }
+
+  if (newArticles > 0) {
+    console.log(`  ${company.company_name}: ${newArticles} new articles`);
   }
 }
 
-async function sendEmailViaResend(fromAddress, to, subject, htmlBody, textBody) {
-  const response = await fetch('https://api.resend.com/emails', {
-    method: 'POST',
-    headers: {
-      'Authorization': `Bearer ${RESEND_API_KEY}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({
-      from: fromAddress,
-      to: to,
-      subject: subject,
-      html: htmlBody,
-      text: textBody,
-    }),
+async function concurrentMap(items, limit, asyncFn) {
+  let index = 0;
+  const results = new Array(items.length);
+  async function worker() {
+    while (index < items.length) {
+      const i = index++;
+      results[i] = await asyncFn(items[i]);
+    }
+  }
+  await Promise.all(
+    Array.from({ length: Math.min(limit, items.length) }, () => worker())
+  );
+  return results;
+}
+
+async function fetchCompaniesBatch(limit) {
+  const rows = [];
+  for (let from = 0; from < limit; from += DB_PAGE_SIZE) {
+    const to = Math.min(from + DB_PAGE_SIZE, limit) - 1;
+    const { data, error } = await supabase
+      .from('companies')
+      .select('id, company_name, website_url')
+      .not('website_url', 'is', null)
+      .order('last_scanned_at', { ascending: true, nullsFirst: true })
+      .range(from, to);
+    if (error) {
+      console.error('Company fetch failed:', error.message);
+      break;
+    }
+    if (!data || data.length === 0) break;
+    rows.push(...data);
+    if (data.length < DB_PAGE_SIZE) break;
+  }
+  return rows;
+}
+
+async function main() {
+  console.log(`Collecting Google News (batch: ${NEWS_BATCH_SIZE}, concurrency: ${NEWS_CONCURRENCY})...`);
+
+  const companies = await fetchCompaniesBatch(NEWS_BATCH_SIZE);
+
+  if (!companies || companies.length === 0) {
+    console.log('No companies to scan.');
+    return;
+  }
+
+  console.log(`Scanning news for ${companies.length} companies...`);
+
+  let done = 0;
+  await concurrentMap(companies, NEWS_CONCURRENCY, async (company) => {
+    try {
+      await scanCompanyNews(company);
+    } catch (e) {
+      console.error(`  Error processing ${company.company_name}: ${e.message}`);
+    } finally {
+      done++;
+      if (done % 100 === 0) console.log(`  Progress: ${done}/${companies.length}`);
+    }
   });
 
-  if (!response.ok) {
-    const error = await response.text();
-    throw new Error(`Resend API error: ${response.status} ${error}`);
-  }
-  return response.json();
-}
-
-// ---------- USER NOTIFICATION ----------
-async function sendUserNotification(userEmail, companyName, signalDescription) {
-  const subject = `You have a new signal for ${companyName}`;
-  const html = `<p>A new signal was detected for <strong>${companyName}</strong>:</p>
-                <p><em>${signalDescription}</em></p>
-                <p><a href="https://modelatlas.net">View it on ModelAtlas</a></p>`;
-  const text = `You have a new signal for ${companyName}: ${signalDescription}\n\nView it here: https://modelatlas.net`;
-
-  try {
-    await sendEmailViaResend(
-      `ModelAtlas <${FROM_DOMAIN}>`,
-      userEmail,
-      subject,
-      html,
-      text
-    );
-    console.log(`  ✅ Notification sent to ${userEmail}`);
-  } catch (err) {
-    console.error(`  ❌ Failed to send notification to ${userEmail}:`, err.message);
-  }
-}
-
-// ---------- MAIN ----------
-async function processPendingSignals() {
-  console.log('Checking for pending signals...');
-
-  const { data: signals, error } = await supabase
-    .from('signals')
-    .select('id, lead_id, user_id, description, signal_detail, source_url, email_subject')
-    .eq('email_status', 'pending');
-
-  if (error) {
-    console.error('Error fetching signals:', error.message);
-    return;
-  }
-
-  if (!signals || signals.length === 0) {
-    console.log('No pending signals.');
-    return;
-  }
-
-  console.log(`Found ${signals.length} pending signal(s).`);
-
-  for (const signal of signals) {
-    const profile = await getProfile(signal.user_id);
-    const plan = profile.plan;
-    const senderName = profile.sender_name || DEFAULT_FROM_NAME;
-    const fromAddress = `${senderName} <${FROM_DOMAIN}>`;
-
-    const { data: lead, error: leadError } = await supabase
-      .from('leads')
-      .select('id, email, company_name, name')
-      .eq('id', signal.lead_id)
-      .single();
-
-    if (leadError || !lead || !lead.email) {
-      console.log(`  Skipping signal ${signal.id}: no lead email.`);
-      await supabase.from('signals').update({ email_status: 'no_email' }).eq('id', signal.id);
-      continue;
-    }
-
-    // Should this signal be held for manual approval?
-    const manualApproval = (plan === 'free') || (profile.auto_pilot === false);
-
-    if (manualApproval) {
-      console.log(`  Manual approval – marking signal ${signal.id} as awaiting_approval.`);
-      await supabase.from('signals').update({ email_status: 'awaiting_approval' }).eq('id', signal.id);
-
-      // Send notification to the user if we have their email and they haven't disabled notifications
-      if (profile.email && profile.notify_signals !== false) {
-        const signalDesc = signal.signal_detail || signal.description;
-        await sendUserNotification(profile.email, lead.company_name || 'a company', signalDesc);
-      } else {
-        console.log('  User has no email or disabled notifications, skipping notification.');
-      }
-      continue;
-    }
-
-    // ---------- AUTO‑PILOT (paid users with auto_pilot on) ----------
-    const firstName = getFirstName(lead.name);
-    const company = lead.company_name || 'the company';
-    const subject = signal.email_subject || `Quick update about ${company}`;
-    const signalDetail = signal.signal_detail || signal.description;
-
-    let htmlBody = '';
-    let textBody = '';
-
-    if (profile.ai_enabled) {
-      console.log('  AI generation enabled, calling PHP relay...');
-      const aiBody = await generateAIEmail(firstName, company, signalDetail, '', senderName, signal.user_id);
-      if (aiBody) {
-        htmlBody = `<p>${aiBody.replace(/\n/g, '<br>')}</p>`;
-        textBody = aiBody;
-      }
-    }
-
-    if (!htmlBody) {
-      htmlBody = `
-        <p>Hi ${firstName},</p>
-        <p>I saw that ${company} just ${signalDetail}. That seemed like a good reason to reach out again.</p>
-        <p>Are you still involved with them, or has anything changed on your end?</p>
-        <p>If now is a bad time, no worries at all — just let me know.</p>
-        <p>Best,<br>${senderName}</p>
-      `;
-      textBody = `Hi ${firstName},\n\nI saw that ${company} just ${signalDetail}. That seemed like a good reason to reach out again.\n\nAre you still involved with them, or has anything changed on your end?\n\nIf now is a bad time, no worries at all — just let me know.\n\nBest,\n${senderName}`;
-    }
-
-    // Free‑tier signature only if plan is free
-    if (plan === 'free') {
-      htmlBody += `<p style="color:#888; font-size:12px; margin-top:20px;">Sent with ModelAtlas – reactivate dead leads automatically.</p>`;
-    }
-
-    try {
-      await sendEmailViaResend(fromAddress, lead.email, subject, htmlBody, textBody);
-      console.log(`  ✅ Email sent to ${lead.email} from "${senderName}" (signal ${signal.id})`);
-
-      await supabase.from('signals').update({
-        email_status: 'sent',
-        sent_at: new Date().toISOString(),
-        email_body: htmlBody
-      }).eq('id', signal.id);
-
-    } catch (err) {
-      console.error(`  ❌ Failed to send email for signal ${signal.id}:`, err.message);
-      await supabase.from('signals').update({ email_status: 'error' }).eq('id', signal.id);
-    }
-  }
-
-  console.log('Email processing complete.');
+  console.log('\nGoogle News collection complete.');
   process.exit(0);
 }
 
-processPendingSignals().catch(err => {
+main().catch(err => {
   console.error(err);
   process.exit(1);
-});
+}); 
