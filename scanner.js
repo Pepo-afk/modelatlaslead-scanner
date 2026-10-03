@@ -12,16 +12,15 @@ const supabase = createClient(
 );
 
 // ---------- TUNABLES ----------
-const MAX_PAGES_PER_COMPANY = 3;        // careers, blog, press/news
-const COMPANY_CONCURRENCY = 25;         // companies processed in parallel
-const GLOBAL_HTTP_CONCURRENCY = 80;     // total concurrent HTTP requests
+const MAX_PAGES_PER_COMPANY = 3;
+const COMPANY_CONCURRENCY = 25;
+const GLOBAL_HTTP_CONCURRENCY = 80;
 const FETCH_TIMEOUT_MS = 5000;
-const SCAN_BATCH_SIZE = 4000;           // companies per day (rotation batch)
+const SCAN_BATCH_SIZE = 5000;
+const DB_PAGE_SIZE = 1000;
 
 const USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
 
-// Homepage and "about" are intentionally NOT scanned for signals (too noisy/slow).
-// Homepage is still fetched once per company, but ONLY to harvest links.
 const PAGE_TYPE_KEYWORDS = {
   careers: ['careers', 'career', 'jobs', 'job-openings', 'join-us', 'work-with-us', 'join-our-team'],
   blog: ['blog', 'insights', 'articles', 'stories', 'resources/blog'],
@@ -94,7 +93,7 @@ async function fetchWithLimit(url, conditionalHeaders = {}) {
   }
 }
 
-// ---------- TEXT / HASH HELPERS ----------
+// ---------- HELPERS ----------
 function extractVisibleText($) {
   $('script, style, nav, footer, header, noscript, iframe, svg, img, [aria-hidden="true"]').remove();
   return ($('body').text() || '').replace(/\s+/g, ' ').trim();
@@ -119,7 +118,6 @@ function countJobs(html) {
   return maxCount;
 }
 
-// ---------- LINK SCORING ----------
 function scoreLinkForCategory(path, keywords) {
   const lower = path.toLowerCase();
   let best = -1;
@@ -170,7 +168,6 @@ function pickCandidatePages(links, baseUrl) {
   return selected.slice(0, MAX_PAGES_PER_COMPANY);
 }
 
-// ---------- CONCURRENCY HELPER ----------
 async function concurrentMap(items, limit, asyncFn) {
   let index = 0;
   const results = new Array(items.length);
@@ -185,13 +182,35 @@ async function concurrentMap(items, limit, asyncFn) {
   return results;
 }
 
+// ---------- PAGINATED COMPANY FETCH ----------
+async function fetchCompaniesBatch(limit) {
+  const rows = [];
+  for (let from = 0; from < limit; from += DB_PAGE_SIZE) {
+    const to = Math.min(from + DB_PAGE_SIZE, limit) - 1;
+    const { data, error } = await supabase
+      .from('companies')
+      .select('id, company_name, website_url')
+      .not('website_url', 'is', null)
+      .not('website_url', 'ilike', '%linkedin.com%')
+      .order('last_scanned_at', { ascending: true, nullsFirst: true })
+      .range(from, to);
+    if (error) {
+      console.error('Company fetch failed:', error.message);
+      break;
+    }
+    if (!data || data.length === 0) break;
+    rows.push(...data);
+    if (data.length < DB_PAGE_SIZE) break;
+  }
+  return rows;
+}
+
 // ---------- PER-COMPANY SCAN ----------
 async function scanCompany(company, scanRunId) {
   let website = company.website_url;
   if (!website || website.toLowerCase().includes('linkedin.com')) return;
   if (!website.startsWith('http')) website = 'https://' + website;
 
-  // 1. Homepage fetch, link discovery only
   const homeRes = await fetchWithLimit(website);
   if (!homeRes || homeRes.status >= 400 || !homeRes.data) return;
 
@@ -210,7 +229,6 @@ async function scanCompany(company, scanRunId) {
 
   if (candidates.length === 0) return;
 
-  // 2. Load existing active pages
   const { data: existingPages } = await supabase
     .from('company_pages')
     .select('id, page_url, page_type, etag, last_modified')
@@ -218,7 +236,6 @@ async function scanCompany(company, scanRunId) {
     .eq('is_active', true);
   const existingMap = new Map((existingPages || []).map(p => [p.page_url, p]));
 
-  // 3. Load latest snapshot hash/job_count
   const existingCandidateIds = candidates
     .map(c => existingMap.get(c.url)?.id)
     .filter(Boolean);
@@ -237,7 +254,6 @@ async function scanCompany(company, scanRunId) {
     }
   }
 
-  // 4. Conditional fetch of each candidate page
   const fetchResults = await Promise.all(candidates.map(async (candidate) => {
     const existing = existingMap.get(candidate.url);
     const conditionalHeaders = {};
@@ -263,7 +279,6 @@ async function scanCompany(company, scanRunId) {
     };
   }));
 
-  // 5. Build batched writes
   const newPageRows = [];
   const pageUpsertRows = [];
   const snapshotRows = [];
@@ -290,7 +305,6 @@ async function scanCompany(company, scanRunId) {
       continue;
     }
 
-    // status === 'fetched'
     const { cleanedText, textHash, jobCount, etag, lastModified, httpStatus } = result;
     const prevSnap = existing ? latestSnapByPage.get(existing.id) : null;
     const contentChanged = !prevSnap || prevSnap.text_hash !== textHash;
@@ -332,7 +346,6 @@ async function scanCompany(company, scanRunId) {
     }
   }
 
-  // 6. Insert new pages, wire up IDs
   if (newPageRows.length > 0) {
     const insertPayload = newPageRows.map(({ _pendingSnapshot, _pendingUpdate, ...row }) => row);
     const { data: inserted, error: insertErr } = await supabase
@@ -370,7 +383,6 @@ async function scanCompany(company, scanRunId) {
     }
   }
 
-  // 7. Pages no longer linked
   for (const [url, page] of existingMap.entries()) {
     if (!seenPageUrls.has(url)) {
       pageUpsertRows.push({
@@ -384,7 +396,6 @@ async function scanCompany(company, scanRunId) {
     }
   }
 
-  // 8. Flush writes
   if (snapshotRows.length > 0) {
     await supabase.from('page_snapshots').insert(snapshotRows);
   }
@@ -413,15 +424,9 @@ async function main() {
   }
   const scanRunId = run.id;
 
-  const { data: companies, error } = await supabase
-    .from('companies')
-    .select('id, company_name, website_url')
-    .not('website_url', 'is', null)
-    .not('website_url', 'ilike', '%linkedin.com%')
-    .order('last_scanned_at', { ascending: true, nullsFirst: true })
-    .limit(SCAN_BATCH_SIZE);
+  const companies = await fetchCompaniesBatch(SCAN_BATCH_SIZE);
 
-  if (error || !companies || companies.length === 0) {
+  if (!companies || companies.length === 0) {
     console.log('No companies to scan.');
     await supabase
       .from('scan_runs')
@@ -448,7 +453,6 @@ async function main() {
     }
   });
 
-  // Batch update last_scanned_at so rotation advances
   const nowIso = new Date().toISOString();
   const CHUNK = 500;
   for (let i = 0; i < scannedIds.length; i += CHUNK) {
@@ -482,4 +486,4 @@ async function main() {
 main().catch(err => {
   console.error('Fatal error:', err);
   process.exit(1);
-}); 
+});
