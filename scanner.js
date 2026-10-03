@@ -11,14 +11,14 @@ const supabase = createClient(
   { auth: { persistSession: false } }
 );
 
-// ---------- TUNABLES ----------
 const MAX_PAGES_PER_COMPANY = 3;
 const COMPANY_CONCURRENCY = 15;
 const GLOBAL_HTTP_CONCURRENCY = 40;
 const FETCH_TIMEOUT_MS = 5000;
-const SCAN_BATCH_SIZE = 5000;      // total companies per run
-const CHUNK_SIZE = 500;            // companies processed at a time (memory bound)
-const DB_PAGE_SIZE = 1000;         // Supabase per-query row cap
+const SCAN_BATCH_SIZE = 5000;
+const CHUNK_SIZE = 500;
+const DB_PAGE_SIZE = 1000;
+const MAX_ARTICLE_LINKS = 20;
 
 const USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
 
@@ -41,7 +41,6 @@ function isBlacklisted(url) {
   return URL_BLACKLIST.some(term => lower.includes(term));
 }
 
-// ---------- SHARED HTTP CLIENT ----------
 const httpAgent = new http.Agent({ keepAlive: true, maxSockets: GLOBAL_HTTP_CONCURRENCY });
 const httpsAgent = new https.Agent({ keepAlive: true, maxSockets: GLOBAL_HTTP_CONCURRENCY });
 
@@ -57,7 +56,6 @@ const httpClient = axios.create({
   },
 });
 
-// ---------- GLOBAL SEMAPHORE ----------
 class Semaphore {
   constructor(max) {
     this.max = max;
@@ -94,7 +92,6 @@ async function fetchWithLimit(url, conditionalHeaders = {}) {
   }
 }
 
-// ---------- HELPERS ----------
 function extractVisibleText($) {
   $('script, style, nav, footer, header, noscript, iframe, svg, img, [aria-hidden="true"]').remove();
   return ($('body').text() || '').replace(/\s+/g, ' ').trim();
@@ -117,6 +114,54 @@ function countJobs(html) {
     maxCount = Math.max(maxCount, jobLike.length);
   }
   return maxCount;
+}
+
+// Extract article links from blog/press index pages.
+// Returns an array of { url, title } for links that look like specific articles.
+function extractArticleLinks($, baseUrl) {
+  const hostname = new URL(baseUrl).hostname;
+  const basePath = new URL(baseUrl).pathname.replace(/\/$/, '');
+  const articles = [];
+  const seen = new Set();
+
+  $('a[href]').each((i, el) => {
+    const href = $(el).attr('href');
+    if (!href) return;
+    const text = ($(el).text() || '').trim().replace(/\s+/g, ' ');
+    if (!text || text.length < 20 || text.length > 200) return;
+
+    let url;
+    try {
+      url = new URL(href, baseUrl);
+    } catch {
+      return;
+    }
+    if (url.hostname !== hostname) return;
+    if (isBlacklisted(url.href)) return;
+
+    const path = url.pathname.replace(/\/$/, '');
+    // Must be deeper than the index page (index is /blog, article is /blog/xyz)
+    if (path === basePath) return;
+    if (!path.startsWith(basePath + '/') && !basePath.includes(path.split('/').filter(Boolean)[0])) {
+      // allow if same first segment
+    }
+
+    // Must have at least 2 path segments (avoid /about, /contact)
+    const segments = path.split('/').filter(Boolean);
+    if (segments.length < 2) return;
+
+    // Skip obvious nav/utility paths
+    const lower = path.toLowerCase();
+    if (/\/(about|contact|pricing|signup|login|careers|jobs|tags|category|categories|author|page|search|subscribe)\b/.test(lower)) return;
+    if (/\.(png|jpg|jpeg|gif|svg|pdf|zip)$/i.test(lower)) return;
+
+    if (seen.has(url.href)) return;
+    seen.add(url.href);
+
+    articles.push({ url: url.href, title: text });
+  });
+
+  return articles.slice(0, MAX_ARTICLE_LINKS);
 }
 
 function scoreLinkForCategory(path, keywords) {
@@ -183,7 +228,6 @@ async function concurrentMap(items, limit, asyncFn) {
   return results;
 }
 
-// ---------- PAGINATED COMPANY FETCH ----------
 async function fetchCompaniesBatch(limit) {
   const rows = [];
   for (let from = 0; from < limit; from += DB_PAGE_SIZE) {
@@ -206,7 +250,6 @@ async function fetchCompaniesBatch(limit) {
   return rows;
 }
 
-// ---------- PER-COMPANY SCAN ----------
 async function scanCompany(company, scanRunId) {
   let website = company.website_url;
   if (!website || website.toLowerCase().includes('linkedin.com')) return;
@@ -224,7 +267,7 @@ async function scanCompany(company, scanRunId) {
       if (href) links.push(href);
     });
     candidates = pickCandidatePages(links, website);
-    homeRes.data = null; // release the raw HTML
+    homeRes.data = null;
   } catch {
     return;
   }
@@ -274,10 +317,22 @@ async function scanCompany(company, scanRunId) {
     const etag = res.headers?.etag || null;
     const lastModified = res.headers?.['last-modified'] || null;
 
+    // Extract article links for blog and press pages
+    let articleLinks = null;
+    if (candidate.pageType === 'blog' || candidate.pageType === 'press') {
+      try {
+        articleLinks = extractArticleLinks($, candidate.url);
+        if (articleLinks.length === 0) articleLinks = null;
+      } catch {
+        articleLinks = null;
+      }
+    }
+
     const result = {
       candidate, existing, status: 'fetched',
       cleanedText, textHash, jobCount, etag, lastModified,
       httpStatus: res.status,
+      articleLinks,
     };
     res.data = null;
     return result;
@@ -309,7 +364,7 @@ async function scanCompany(company, scanRunId) {
       continue;
     }
 
-    const { cleanedText, textHash, jobCount, etag, lastModified, httpStatus } = result;
+    const { cleanedText, textHash, jobCount, etag, lastModified, httpStatus, articleLinks } = result;
     const prevSnap = existing ? latestSnapByPage.get(existing.id) : null;
     const contentChanged = !prevSnap || prevSnap.text_hash !== textHash;
 
@@ -320,7 +375,7 @@ async function scanCompany(company, scanRunId) {
         page_type: candidate.pageType,
         is_active: true,
         last_status: 'pending',
-        _pendingSnapshot: { cleanedText, textHash, jobCount, httpStatus },
+        _pendingSnapshot: { cleanedText, textHash, jobCount, httpStatus, articleLinks },
         _pendingUpdate: { etag, lastModified, jobCount },
       });
     } else {
@@ -345,12 +400,12 @@ async function scanCompany(company, scanRunId) {
           text_hash: textHash,
           job_count: jobCount,
           http_status: httpStatus,
+          article_links: articleLinks,
         });
       }
     }
   }
 
-  // Clear results array reference to free memory early
   fetchResults.length = 0;
 
   if (newPageRows.length > 0) {
@@ -372,6 +427,7 @@ async function scanCompany(company, scanRunId) {
           text_hash: row._pendingSnapshot.textHash,
           job_count: row._pendingSnapshot.jobCount,
           http_status: row._pendingSnapshot.httpStatus,
+          article_links: row._pendingSnapshot.articleLinks,
         });
         pageUpsertRows.push({
           id,
@@ -416,9 +472,8 @@ async function scanCompany(company, scanRunId) {
   }
 }
 
-// ---------- MAIN ----------
 async function main() {
-  console.log(`Starting rotation scan (batch size: ${SCAN_BATCH_SIZE}, chunk size: ${CHUNK_SIZE})...`);
+  console.log(`Starting rotation scan (batch: ${SCAN_BATCH_SIZE}, chunk: ${CHUNK_SIZE})...`);
 
   const { data: run, error: runErr } = await supabase
     .from('scan_runs')
@@ -442,7 +497,7 @@ async function main() {
     return;
   }
 
-  console.log(`Scanning ${companies.length} companies (companies concurrency: ${COMPANY_CONCURRENCY}, HTTP concurrency: ${GLOBAL_HTTP_CONCURRENCY})...`);
+  console.log(`Scanning ${companies.length} companies...`);
 
   const scannedIds = [];
   let companiesScanned = 0;
@@ -473,8 +528,6 @@ async function main() {
     if (typeof global.gc === 'function') global.gc();
   }
 
-  console.log(`All chunks done. Updating last_scanned_at for ${scannedIds.length} companies...`);
-
   const nowIso = new Date().toISOString();
   const UPDATE_CHUNK = 500;
   for (let i = 0; i < scannedIds.length; i += UPDATE_CHUNK) {
@@ -502,10 +555,10 @@ async function main() {
     })
     .eq('id', scanRunId);
 
-  console.log(`Scan complete! Companies: ${companiesScanned}, snapshots written: ${count || 0}, errors: ${errors}`);
+  console.log(`Scan complete. Companies: ${companiesScanned}, snapshots: ${count || 0}, errors: ${errors}`);
 }
 
 main().catch(err => {
   console.error('Fatal error:', err);
   process.exit(1);
-}); 
+});
