@@ -9,6 +9,8 @@ const supabase = createClient(
 );
 
 const MAX_ARTICLE_AGE_DAYS = 7;
+const NEWS_BATCH_SIZE = 4000;    // companies per run
+const NEWS_CONCURRENCY = 20;     // parallel RSS fetches
 
 function isArticleRecent(pubDate) {
   if (!pubDate) return true;
@@ -49,7 +51,6 @@ async function scanCompanyNews(company) {
   }
 
   if (!feed.items || feed.items.length === 0) {
-    console.log(`  No news articles for ${name}`);
     return;
   }
 
@@ -67,14 +68,12 @@ async function scanCompanyNews(company) {
 
     const combinedText = `${title} ${snippet}`.toLowerCase();
     const companyNameLower = company.company_name.toLowerCase();
-    const namePattern = new RegExp(`\\b${companyNameLower}\\b`, 'i');
+    const namePattern = new RegExp(`\\b${companyNameLower.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i');
     if (!namePattern.test(combinedText)) {
-      console.log(`    Irrelevant (name not found): ${title}`);
       await markArticleProcessed(company.id, link, title, item.pubDate);
       continue;
     }
 
-    console.log(`    Trying to insert article: ${link}`);
     const { error: insertErr } = await supabase.from('pending_news_signals').insert({
       company_id: company.id,
       article_url: link,
@@ -84,7 +83,7 @@ async function scanCompanyNews(company) {
     });
 
     if (insertErr) {
-      console.error(`    ❌ Failed to insert article: ${insertErr.message}`);
+      console.error(`    Failed to insert article: ${insertErr.message}`);
     } else {
       newArticles++;
     }
@@ -92,30 +91,54 @@ async function scanCompanyNews(company) {
     await markArticleProcessed(company.id, link, title, item.pubDate);
   }
 
-  console.log(`  ${newArticles} new relevant articles stored.`);
+  if (newArticles > 0) {
+    console.log(`  ${company.company_name}: ${newArticles} new articles`);
+  }
+}
+
+async function concurrentMap(items, limit, asyncFn) {
+  let index = 0;
+  const results = new Array(items.length);
+  async function worker() {
+    while (index < items.length) {
+      const i = index++;
+      results[i] = await asyncFn(items[i]);
+    }
+  }
+  await Promise.all(
+    Array.from({ length: Math.min(limit, items.length) }, () => worker())
+  );
+  return results;
 }
 
 async function main() {
-  console.log('Collecting Google News articles (no signal creation)...');
+  console.log(`Collecting Google News (batch: ${NEWS_BATCH_SIZE}, concurrency: ${NEWS_CONCURRENCY})...`);
 
   const { data: companies, error } = await supabase
     .from('companies')
     .select('id, company_name, website_url')
-    .not('website_url', 'is', null);
+    .not('website_url', 'is', null)
+    .order('last_scanned_at', { ascending: true, nullsFirst: true })
+    .limit(NEWS_BATCH_SIZE);
 
   if (error || !companies?.length) {
     console.log('No companies to scan.');
     return;
   }
 
-  for (const company of companies) {
-    console.log(`\nScanning news for ${company.company_name}…`);
+  console.log(`Scanning news for ${companies.length} companies...`);
+
+  let done = 0;
+  await concurrentMap(companies, NEWS_CONCURRENCY, async (company) => {
     try {
       await scanCompanyNews(company);
     } catch (e) {
       console.error(`  Error processing ${company.company_name}: ${e.message}`);
+    } finally {
+      done++;
+      if (done % 100 === 0) console.log(`  Progress: ${done}/${companies.length}`);
     }
-  }
+  });
 
   console.log('\nGoogle News collection complete.');
   process.exit(0);
