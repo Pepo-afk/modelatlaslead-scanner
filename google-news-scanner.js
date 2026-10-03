@@ -13,6 +13,48 @@ const NEWS_BATCH_SIZE = 5000;
 const NEWS_CONCURRENCY = 20;
 const DB_PAGE_SIZE = 1000;
 
+// ---------- DISAMBIGUATION ----------
+// For companies with short or common names, we require the article to NOT
+// contain these disqualifying terms. If it does, we drop the article.
+const DISAMBIGUATION_EXCLUDE = {
+  'railway': ['station', 'museum', 'metro', 'subway', 'rail yard', 'railyard', 'rail line', 'railway age', 'indian railways', 'network rail', 'rail car', 'railcar', 'freight rail', 'passenger rail', 'train', 'locomotive'],
+  'square': ['square feet', 'square foot', 'town square', 'market square', 'times square', 'square meter', 'square mile', 'union square', 'square dance'],
+  'circle': ['circle back', 'traffic circle', 'circle of friends', 'full circle', 'arctic circle', 'circle k', 'crop circle'],
+  'standard': ['standard deviation', 'industry standard', 'standard time', 'gold standard', 'standard issue', 'standard operating', 'standard oil', 'standard poodle'],
+  'compass': ['compass rose', 'moral compass', 'compass point', 'compass direction', 'compass needle'],
+  'arena': ['arena concert', 'sports arena', 'arena football', 'arena rock', 'arena tour'],
+  'just': ['just announced', 'just said', 'just in', 'just now', 'just a', 'just the', 'just one'],
+  'progress': ['progress report', 'in progress', 'make progress', 'progress bar', 'progress made', 'making progress'],
+  'felix': ['felix the cat', 'felix mendelssohn', 'felix salten', 'hurricane felix'],
+  'standard bank': ['standard bank of south africa', 'standard chartered'],
+  'relay': ['relay race', 'relay for life', 'torch relay', 'relay baton', 'relay station'],
+  'ladder': ['corporate ladder', 'social ladder', 'ladder tournament', 'fire ladder'],
+  'arena group': [],
+  'circle ci': [],
+  'nation': ['nation state', 'nation building', 'nation wide', 'nationwide'],
+  'comcast': [],
+  'orbit': ['orbit the earth', 'earth orbit', 'lunar orbit', 'orbital'],
+  'column': ['newspaper column', 'column inch', 'spinal column', 'column graph'],
+  'hex': ['hex code', 'hex color', 'hex nut', 'hex key'],
+  'arc': ['arc of', 'story arc', 'arc welding', 'arc reactor'],
+  'nova': ['nova scotia', 'nova pbs', 'supernova', 'nova star'],
+  'delta': ['delta airlines', 'delta variant', 'mississippi delta', 'river delta'],
+  'unity': ['unity in', 'community unity', 'unity of', 'unity government'],
+  'prism': ['prism light', 'prism optics', 'prism effect'],
+  'venture': ['venture capital', 'venture fund', 'joint venture'],
+  'venture capital': [],
+  'axial': [],
+};
+
+function isDisqualified(companyName, articleText) {
+  const lower = companyName.toLowerCase().trim();
+  const excludes = DISAMBIGUATION_EXCLUDE[lower];
+  if (!excludes || excludes.length === 0) return false;
+  const text = articleText.toLowerCase();
+  return excludes.some(term => text.includes(term));
+}
+
+// ---------- HELPERS ----------
 function isArticleRecent(pubDate) {
   if (!pubDate) return true;
   const articleDate = new Date(pubDate);
@@ -70,6 +112,13 @@ async function scanCompanyNews(company) {
     const escaped = companyNameLower.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     const namePattern = new RegExp(`\\b${escaped}\\b`, 'i');
     if (!namePattern.test(combinedText)) {
+      await markArticleProcessed(company.id, link, title, item.pubDate);
+      continue;
+    }
+
+    // Disambiguation check for generic company names
+    if (isDisqualified(company.company_name, combinedText)) {
+      console.log(`    Disqualified (generic name match): ${title}`);
       await markArticleProcessed(company.id, link, title, item.pubDate);
       continue;
     }
@@ -163,4 +212,4 @@ async function main() {
 main().catch(err => {
   console.error(err);
   process.exit(1);
-}); 
+});
