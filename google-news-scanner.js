@@ -9,8 +9,9 @@ const supabase = createClient(
 );
 
 const MAX_ARTICLE_AGE_DAYS = 7;
-const NEWS_BATCH_SIZE = 4000;    // companies per run
-const NEWS_CONCURRENCY = 20;     // parallel RSS fetches
+const NEWS_BATCH_SIZE = 5000;
+const NEWS_CONCURRENCY = 20;
+const DB_PAGE_SIZE = 1000;
 
 function isArticleRecent(pubDate) {
   if (!pubDate) return true;
@@ -50,9 +51,7 @@ async function scanCompanyNews(company) {
     return;
   }
 
-  if (!feed.items || feed.items.length === 0) {
-    return;
-  }
+  if (!feed.items || feed.items.length === 0) return;
 
   const processedUrls = await getProcessedUrls(company.id);
   let newArticles = 0;
@@ -68,7 +67,8 @@ async function scanCompanyNews(company) {
 
     const combinedText = `${title} ${snippet}`.toLowerCase();
     const companyNameLower = company.company_name.toLowerCase();
-    const namePattern = new RegExp(`\\b${companyNameLower.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i');
+    const escaped = companyNameLower.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const namePattern = new RegExp(`\\b${escaped}\\b`, 'i');
     if (!namePattern.test(combinedText)) {
       await markArticleProcessed(company.id, link, title, item.pubDate);
       continue;
@@ -111,17 +111,33 @@ async function concurrentMap(items, limit, asyncFn) {
   return results;
 }
 
+async function fetchCompaniesBatch(limit) {
+  const rows = [];
+  for (let from = 0; from < limit; from += DB_PAGE_SIZE) {
+    const to = Math.min(from + DB_PAGE_SIZE, limit) - 1;
+    const { data, error } = await supabase
+      .from('companies')
+      .select('id, company_name, website_url')
+      .not('website_url', 'is', null)
+      .order('last_scanned_at', { ascending: true, nullsFirst: true })
+      .range(from, to);
+    if (error) {
+      console.error('Company fetch failed:', error.message);
+      break;
+    }
+    if (!data || data.length === 0) break;
+    rows.push(...data);
+    if (data.length < DB_PAGE_SIZE) break;
+  }
+  return rows;
+}
+
 async function main() {
   console.log(`Collecting Google News (batch: ${NEWS_BATCH_SIZE}, concurrency: ${NEWS_CONCURRENCY})...`);
 
-  const { data: companies, error } = await supabase
-    .from('companies')
-    .select('id, company_name, website_url')
-    .not('website_url', 'is', null)
-    .order('last_scanned_at', { ascending: true, nullsFirst: true })
-    .limit(NEWS_BATCH_SIZE);
+  const companies = await fetchCompaniesBatch(NEWS_BATCH_SIZE);
 
-  if (error || !companies?.length) {
+  if (!companies || companies.length === 0) {
     console.log('No companies to scan.');
     return;
   }
@@ -147,4 +163,4 @@ async function main() {
 main().catch(err => {
   console.error(err);
   process.exit(1);
-});
+}); 
