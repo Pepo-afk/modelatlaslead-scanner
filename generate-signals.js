@@ -25,7 +25,6 @@ async function getUserPlan(userId) {
   return data?.plan || 'free';
 }
 
-// ---------- WORD WEIGHTS ----------
 let wordWeights = new Map();
 
 async function loadWordWeights() {
@@ -48,14 +47,13 @@ async function loadWordWeights() {
     else if (ratio < 0.5) wordWeights.set(row.word, 0.5);
     else wordWeights.set(row.word, 1.0);
   }
-  console.log(`Loaded ${wordWeights.size} word weights (for feedback only).`);
+  console.log(`Loaded ${wordWeights.size} word weights.`);
 }
 
 function getWordWeight(word) {
   return wordWeights.get(word) ?? 1.0;
 }
 
-// ---------- TEXT HELPERS ----------
 function getAddedText(oldText, newText) {
   if (!oldText) return newText || '';
   if (!newText) return '';
@@ -73,7 +71,7 @@ function normalizeUrl(url) {
   return 'https://' + trimmed;
 }
 
-// ---------- KEYWORD DETECTION ----------
+// Keyword detectors (unchanged from previous version)
 async function detectFunding(text) {
   const lower = text.toLowerCase();
   const keywords = [
@@ -271,7 +269,6 @@ async function getSignalsFromTextKeyword(text, oldText = null) {
   return results;
 }
 
-// ---------- HIRING SURGE (numeric) ----------
 async function checkHiringSurge(pageId) {
   const { data: snapshots } = await supabase
     .from('page_snapshots')
@@ -285,7 +282,6 @@ async function checkHiringSurge(pageId) {
   return (prev !== null && curr !== null && (curr - prev) >= 5);
 }
 
-// ---------- DAILY CAP COUNT ----------
 async function countSignalsToday(userId) {
   const startOfDay = new Date();
   startOfDay.setHours(0, 0, 0, 0);
@@ -297,7 +293,6 @@ async function countSignalsToday(userId) {
   return count || 0;
 }
 
-// ---------- AI CALL ----------
 function extractJsonObject(text) {
   if (!text) throw new Error('empty AI response');
   let cleaned = text.trim();
@@ -397,22 +392,32 @@ function buildBatchPrompt(items) {
   prompt += "4. 'X powers 3.4M businesses' is not a signal. 'X was named a Meta connector on Sept 29' is a signal.\n";
   prompt += "5. If two items refer to the same event for the same company, return the signal in the most informative item and return empty signals for the duplicate.\n";
   prompt += "6. If the text is a menu, a historical timeline, an educational article, a job listing, boilerplate, or a press-kit blurb, return empty signals.\n";
-  prompt += "7. Be specific. Do not repeat the same idea.\n\n";
-  prompt += "For each item, return a JSON object with: \"signals\" (array of strings from the valid list), \"explanation\" (a specific, human sentence describing what actually happened, include names, numbers, and facts when present), and \"confidence\" (0-100).\n\n";
+  prompt += "7. Be specific. Do not repeat the same idea.\n";
+  prompt += "8. If a list of article links is provided and the signal corresponds to a specific article, set 'source_url' to the URL of that article. If no article clearly matches, set 'source_url' to null.\n\n";
+  prompt += "For each item, return a JSON object with: \"signals\" (array of strings from the valid list), \"explanation\" (specific, human sentence), \"confidence\" (0-100), and \"source_url\" (specific article URL from the provided list, or null).\n\n";
 
   for (const item of items) {
     const id = item.id;
     const type = item.type ?? 'page';
     const text = item.text.substring(0, 1500);
-    prompt += `ID: ${id}\nType: ${type}\nText:\n${text}\n\n`;
+    prompt += `ID: ${id}\nType: ${type}\n`;
+
+    if (item.articleLinks && item.articleLinks.length > 0) {
+      prompt += `Article links:\n`;
+      for (const link of item.articleLinks.slice(0, 15)) {
+        const safeTitle = String(link.title).slice(0, 150);
+        prompt += `- ${safeTitle} => ${link.url}\n`;
+      }
+    }
+
+    prompt += `Text:\n${text}\n\n`;
   }
 
-  prompt += "Return a JSON object where each key is an ID, and the value is the object described above. If no signals, use empty array, empty explanation, and confidence 0.\n";
-  prompt += "Only return valid JSON. Do not include any other text.";
+  prompt += "Return a JSON object where each key is an ID, and the value is the object described above. If no signals, use empty array, empty explanation, confidence 0, source_url null.\n";
+  prompt += "Only return valid JSON.";
   return prompt;
 }
 
-// ---------- AI FEEDBACK LEARNING ----------
 async function applyAIFeedback(itemMeta, aiResult) {
   const adjustments = new Map();
   function addAdjustment(word, field) {
@@ -457,9 +462,8 @@ async function applyAIFeedback(itemMeta, aiResult) {
   console.log(`AI feedback applied for ${adjustments.size} words.`);
 }
 
-// ---------- MAIN ----------
 async function generateSignals() {
-  console.log('Generating signals (per-tier daily limits, featured + per-user)...');
+  console.log('Generating signals...');
 
   await loadWordWeights();
 
@@ -506,7 +510,7 @@ async function generateSignals() {
 
       const { data: snap } = await supabase
         .from('page_snapshots')
-        .select('cleaned_text')
+        .select('cleaned_text, article_links')
         .eq('company_page_id', page.id)
         .order('fetched_at', { ascending: false })
         .limit(2);
@@ -518,18 +522,20 @@ async function generateSignals() {
 
       const currentText = snap[0].cleaned_text || '';
       const previousText = snap[1].cleaned_text || '';
+      const articleLinks = Array.isArray(snap[0].article_links) ? snap[0].article_links : null;
       const keywordResults = await getSignalsFromTextKeyword(currentText, previousText);
 
       if (currentText && previousText && currentText !== previousText) {
         const itemId = `page-${page.id}`;
-        aiItems.push({ id: itemId, type: 'page', text: currentText });
+        aiItems.push({ id: itemId, type: 'page', text: currentText, articleLinks });
         itemMeta[itemId] = {
           type: 'page',
           page,
           keywordResults,
           hasHiringSurge: false,
           sendToAI: true,
-          sourceUrl: page.page_url
+          sourceUrl: page.page_url,
+          articleLinks,
         };
       } else {
         await supabase.from('company_pages').update({ signals_generated: true }).eq('id', page.id);
@@ -613,10 +619,23 @@ async function generateSignals() {
     const aiDecision = aiResult[itemId];
     if (meta.sendToAI && aiDecision && aiDecision.signals && aiDecision.signals.length > 0) {
       console.log(`  AI signals for ${itemId}: ${aiDecision.signals.join(', ')}`);
-      const sourceUrl = meta.sourceUrl;
-      const sourceLabel = meta.type === 'page'
+
+      // Try to use the specific article URL the AI picked, if valid
+      let chosenUrl = meta.sourceUrl;
+      let chosenLabel = meta.type === 'page'
         ? `${meta.page.page_type}: ${meta.page.page_url}`
         : `News: ${meta.news.title}`;
+
+      if (aiDecision.source_url && meta.articleLinks && meta.articleLinks.length > 0) {
+        const validUrls = new Set(meta.articleLinks.map(l => l.url));
+        if (validUrls.has(aiDecision.source_url)) {
+          const match = meta.articleLinks.find(l => l.url === aiDecision.source_url);
+          chosenUrl = aiDecision.source_url;
+          chosenLabel = `${meta.page.page_type}: ${match?.title || aiDecision.source_url}`;
+          console.log(`    -> specific article: ${chosenUrl}`);
+        }
+      }
+
       for (const type of aiDecision.signals) {
         addSignalToCompany(
           company.id,
@@ -625,8 +644,8 @@ async function generateSignals() {
           type,
           aiDecision.explanation,
           aiDecision.confidence || 50,
-          sourceUrl,
-          sourceLabel,
+          chosenUrl,
+          chosenLabel,
           meta.keywordResults.flatMap(r => r.matchedWords || [])
         );
       }
@@ -715,10 +734,7 @@ async function generateSignals() {
       const dailyLimit = SIGNAL_LIMITS[userPlan] ?? 1;
 
       const todaySignals = await countSignalsToday(userId);
-      if (todaySignals >= dailyLimit) {
-        console.log(`  Skipping user ${userId} (plan: ${userPlan}, limit: ${dailyLimit}), daily cap reached.`);
-        continue;
-      }
+      if (todaySignals >= dailyLimit) continue;
 
       const dedupKey = `${userId}-${companyId}`;
       if (createdSignals.has(dedupKey)) continue;
