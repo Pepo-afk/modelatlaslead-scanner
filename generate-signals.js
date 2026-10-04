@@ -71,7 +71,7 @@ function normalizeUrl(url) {
   return 'https://' + trimmed;
 }
 
-// Keyword detectors (unchanged from previous version)
+// ---------- KEYWORD DETECTORS ----------
 async function detectFunding(text) {
   const lower = text.toLowerCase();
   const keywords = [
@@ -84,8 +84,7 @@ async function detectFunding(text) {
   const matched = [];
   for (const kw of keywords) {
     if (lower.includes(kw.phrase)) {
-      const weight = getWordWeight(kw.phrase);
-      score += kw.points * weight;
+      score += kw.points * getWordWeight(kw.phrase);
       matched.push(kw.phrase);
     }
   }
@@ -118,8 +117,7 @@ async function detectHiringSurgeText(text) {
   const matched = [];
   for (const kw of keywords) {
     if (lower.includes(kw.phrase)) {
-      const weight = getWordWeight(kw.phrase);
-      score += kw.points * weight;
+      score += kw.points * getWordWeight(kw.phrase);
       matched.push(kw.phrase);
     }
   }
@@ -146,8 +144,7 @@ async function detectProductLaunch(text) {
   const matched = [];
   for (const kw of keywords) {
     if (lower.includes(kw.phrase)) {
-      const weight = getWordWeight(kw.phrase);
-      score += kw.points * weight;
+      score += kw.points * getWordWeight(kw.phrase);
       matched.push(kw.phrase);
     }
   }
@@ -171,8 +168,7 @@ async function detectPartnership(text) {
   const matched = [];
   for (const kw of keywords) {
     if (lower.includes(kw.phrase)) {
-      const weight = getWordWeight(kw.phrase);
-      score += kw.points * weight;
+      score += kw.points * getWordWeight(kw.phrase);
       matched.push(kw.phrase);
     }
   }
@@ -194,8 +190,7 @@ async function detectExpansion(text) {
   const matched = [];
   for (const kw of keywords) {
     if (lower.includes(kw.phrase)) {
-      const weight = getWordWeight(kw.phrase);
-      score += kw.points * weight;
+      score += kw.points * getWordWeight(kw.phrase);
       matched.push(kw.phrase);
     }
   }
@@ -217,8 +212,7 @@ async function detectRebranding(text) {
   const matched = [];
   for (const kw of keywords) {
     if (lower.includes(kw.phrase)) {
-      const weight = getWordWeight(kw.phrase);
-      score += kw.points * weight;
+      score += kw.points * getWordWeight(kw.phrase);
       matched.push(kw.phrase);
     }
   }
@@ -240,8 +234,7 @@ async function detectLeadershipChange(text) {
   const matched = [];
   for (const kw of keywords) {
     if (lower.includes(kw.phrase)) {
-      const weight = getWordWeight(kw.phrase);
-      score += kw.points * weight;
+      score += kw.points * getWordWeight(kw.phrase);
       matched.push(kw.phrase);
     }
   }
@@ -293,17 +286,21 @@ async function countSignalsToday(userId) {
   return count || 0;
 }
 
+// ---------- JSON ----------
 function extractJsonObject(text) {
   if (!text) throw new Error('empty AI response');
-  let cleaned = text.trim();
+  let cleaned = String(text).trim();
   cleaned = cleaned.replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/i, '');
   const firstBrace = cleaned.indexOf('{');
   const lastBrace = cleaned.lastIndexOf('}');
-  if (firstBrace === -1 || lastBrace === -1 || lastBrace < firstBrace) throw new Error('no JSON object found');
+  if (firstBrace === -1 || lastBrace === -1 || lastBrace < firstBrace) {
+    throw new Error('no JSON object found');
+  }
   const jsonSlice = cleaned.slice(firstBrace, lastBrace + 1);
   return JSON.parse(jsonSlice);
 }
 
+// ---------- AI CALL ----------
 async function callOpenRouter(prompt, retries = 5) {
   for (let attempt = 1; attempt <= retries; attempt++) {
     try {
@@ -316,7 +313,7 @@ async function callOpenRouter(prompt, retries = 5) {
         body: JSON.stringify({
           model: 'openrouter/free',
           messages: [{ role: 'user', content: prompt }],
-          max_tokens: 2000,
+          max_tokens: 8000,
           temperature: 0.1,
           response_format: { type: 'json_object' }
         })
@@ -331,7 +328,7 @@ async function callOpenRouter(prompt, retries = 5) {
 
       if (!response.ok) {
         const errText = await response.text();
-        console.error(`  AI request failed (${response.status}):`, errText);
+        console.error(`  AI request failed (${response.status}):`, errText.slice(0, 200));
         if (attempt < retries) {
           await new Promise(resolve => setTimeout(resolve, 12000));
           continue;
@@ -340,9 +337,22 @@ async function callOpenRouter(prompt, retries = 5) {
       }
 
       const data = await response.json();
-      const content = data?.choices?.[0]?.message?.content;
+      const message = data?.choices?.[0]?.message;
+      let content = message?.content;
+
+      // Safe fallback: only accept reasoning if it parses as valid JSON
+      if (!content && message?.reasoning) {
+        try {
+          const parsed = extractJsonObject(message.reasoning);
+          console.log('  Recovered JSON from reasoning field');
+          return parsed;
+        } catch {
+          // reasoning was thinking text, not the answer. Fall through.
+        }
+      }
+
       if (!content) {
-        console.error('  RAW RESPONSE (no content):', JSON.stringify(data).slice(0, 800));
+        console.error('  RAW RESPONSE (no content):', JSON.stringify(data).slice(0, 400));
         throw new Error('no content in AI response');
       }
 
@@ -350,7 +360,7 @@ async function callOpenRouter(prompt, retries = 5) {
         return extractJsonObject(content);
       } catch (parseErr) {
         console.warn('  JSON parse failed, retrying...');
-        console.warn('  RAW CONTENT (first 400 chars):', String(content).slice(0, 400));
+        console.warn('  RAW CONTENT (first 300 chars):', String(content).slice(0, 300));
         if (attempt < retries) {
           await new Promise(resolve => setTimeout(resolve, 10000));
           continue;
@@ -371,12 +381,14 @@ async function batchDetectSignals(items) {
   for (let i = 0; i < items.length; i += CHUNK_SIZE) {
     const chunk = items.slice(i, i + CHUNK_SIZE);
     const prompt = buildBatchPrompt(chunk);
-    console.log(`  Processing chunk ${i / CHUNK_SIZE + 1}...`);
+    const chunkNum = Math.floor(i / CHUNK_SIZE) + 1;
+    const totalChunks = Math.ceil(items.length / CHUNK_SIZE);
+    console.log(`  Processing chunk ${chunkNum}/${totalChunks}...`);
     try {
       const chunkResult = await callOpenRouter(prompt);
       Object.assign(combinedResult, chunkResult);
     } catch (err) {
-      console.error('  Chunk failed, skipping.');
+      console.error(`  Chunk ${chunkNum} failed, skipping.`);
     }
   }
   return combinedResult;
@@ -389,23 +401,22 @@ function buildBatchPrompt(items) {
   prompt += "1. A signal must be a specific new event with a date or clear recent timing. Not a description of the company.\n";
   prompt += "2. Ignore company descriptions, About pages, and press-kit copy. Statements like 'X powers 3.4 million businesses', 'X has 9,000 integrations', 'X was founded in 2012', 'X is a fully remote team', or 'X is a leader in Y' are NOT signals. They are marketing filler.\n";
   prompt += "3. Ignore statements about the company's size, customer count, team size, founding year, awards, or general status unless accompanied by a specific new event with a date.\n";
-  prompt += "4. 'X powers 3.4M businesses' is not a signal. 'X was named a Meta connector on Sept 29' is a signal.\n";
-  prompt += "5. If two items refer to the same event for the same company, return the signal in the most informative item and return empty signals for the duplicate.\n";
-  prompt += "6. If the text is a menu, a historical timeline, an educational article, a job listing, boilerplate, or a press-kit blurb, return empty signals.\n";
-  prompt += "7. Be specific. Do not repeat the same idea.\n";
-  prompt += "8. If a list of article links is provided and the signal corresponds to a specific article, set 'source_url' to the URL of that article. If no article clearly matches, set 'source_url' to null.\n\n";
+  prompt += "4. If two items refer to the same event for the same company, return the signal in the most informative item and return empty signals for the duplicate.\n";
+  prompt += "5. If the text is a menu, a historical timeline, an educational article, a job listing, boilerplate, or a press-kit blurb, return empty signals.\n";
+  prompt += "6. If a list of article links is provided and the signal corresponds to a specific article, set 'source_url' to the URL of that article. If no article clearly matches, set 'source_url' to null.\n";
+  prompt += "7. BE TERSE. Output only the JSON object. Do not explain your reasoning. Do not restate the rules.\n\n";
   prompt += "For each item, return a JSON object with: \"signals\" (array of strings from the valid list), \"explanation\" (specific, human sentence), \"confidence\" (0-100), and \"source_url\" (specific article URL from the provided list, or null).\n\n";
 
   for (const item of items) {
     const id = item.id;
     const type = item.type ?? 'page';
-    const text = item.text.substring(0, 1500);
+    const text = item.text.substring(0, 1200);
     prompt += `ID: ${id}\nType: ${type}\n`;
 
     if (item.articleLinks && item.articleLinks.length > 0) {
       prompt += `Article links:\n`;
-      for (const link of item.articleLinks.slice(0, 15)) {
-        const safeTitle = String(link.title).slice(0, 150);
+      for (const link of item.articleLinks.slice(0, 10)) {
+        const safeTitle = String(link.title).slice(0, 120);
         prompt += `- ${safeTitle} => ${link.url}\n`;
       }
     }
@@ -413,8 +424,7 @@ function buildBatchPrompt(items) {
     prompt += `Text:\n${text}\n\n`;
   }
 
-  prompt += "Return a JSON object where each key is an ID, and the value is the object described above. If no signals, use empty array, empty explanation, confidence 0, source_url null.\n";
-  prompt += "Only return valid JSON.";
+  prompt += "Return ONLY the JSON object. No commentary. No reasoning. Each key is an ID, value is the object described above.\n";
   return prompt;
 }
 
@@ -462,6 +472,7 @@ async function applyAIFeedback(itemMeta, aiResult) {
   console.log(`AI feedback applied for ${adjustments.size} words.`);
 }
 
+// ---------- MAIN ----------
 async function generateSignals() {
   console.log('Generating signals...');
 
@@ -483,11 +494,13 @@ async function generateSignals() {
     .from('company_pages')
     .select('id, page_url, page_type, company_id')
     .eq('last_status', 'changed')
-    .eq('signals_generated', false);
+    .eq('signals_generated', false)
+    .limit(500);
 
   const { data: newsEntries } = await supabase
     .from('pending_news_signals')
-    .select('id, company_id, article_url, title, snippet, pub_date');
+    .select('id, company_id, article_url, title, snippet, pub_date')
+    .limit(500);
 
   console.log(`Found ${changedPages?.length || 0} changed pages, ${newsEntries?.length || 0} news.`);
 
@@ -572,11 +585,16 @@ async function generateSignals() {
   }
   const companyById = new Map();
   if (companyIds.size > 0) {
-    const { data: companiesData } = await supabase
-      .from('companies')
-      .select('id, company_name, website_url, is_featured')
-      .in('id', Array.from(companyIds));
-    for (const c of companiesData || []) companyById.set(c.id, c);
+    const ids = Array.from(companyIds);
+    const DB_PAGE = 1000;
+    for (let i = 0; i < ids.length; i += DB_PAGE) {
+      const slice = ids.slice(i, i + DB_PAGE);
+      const { data: companiesData } = await supabase
+        .from('companies')
+        .select('id, company_name, website_url, is_featured')
+        .in('id', slice);
+      for (const c of companiesData || []) companyById.set(c.id, c);
+    }
   }
 
   const companySignalsMap = new Map();
@@ -620,7 +638,6 @@ async function generateSignals() {
     if (meta.sendToAI && aiDecision && aiDecision.signals && aiDecision.signals.length > 0) {
       console.log(`  AI signals for ${itemId}: ${aiDecision.signals.join(', ')}`);
 
-      // Try to use the specific article URL the AI picked, if valid
       let chosenUrl = meta.sourceUrl;
       let chosenLabel = meta.type === 'page'
         ? `${meta.page.page_type}: ${meta.page.page_url}`
@@ -632,7 +649,6 @@ async function generateSignals() {
           const match = meta.articleLinks.find(l => l.url === aiDecision.source_url);
           chosenUrl = aiDecision.source_url;
           chosenLabel = `${meta.page.page_type}: ${match?.title || aiDecision.source_url}`;
-          console.log(`    -> specific article: ${chosenUrl}`);
         }
       }
 
@@ -686,7 +702,10 @@ async function generateSignals() {
 
     const description = `Signals detected: ${signalTypes.join(', ')}`;
     const uniqueExps = [...new Set(data.explanations.map(e => e.trim()).filter(Boolean))];
-    const signalDetail = uniqueExps.slice(0, 2).join(' · ') || description;
+    const rawDetail = uniqueExps.slice(0, 1).join('') || description;
+    const signalDetail = rawDetail.length > 180
+      ? rawDetail.slice(0, 177).trim() + '...'
+      : rawDetail;
     const sourceUrls = data.sources;
     const triggeredWords = [...data.triggeredWords];
     const confidence = data.confidence || 50;
@@ -763,9 +782,12 @@ async function generateSignals() {
     }
   }
 
-  if (newsEntries) {
+  if (newsEntries && newsEntries.length > 0) {
     const idsToDelete = newsEntries.map(n => n.id);
-    await supabase.from('pending_news_signals').delete().in('id', idsToDelete);
+    for (let i = 0; i < idsToDelete.length; i += 500) {
+      const slice = idsToDelete.slice(i, i + 500);
+      await supabase.from('pending_news_signals').delete().in('id', slice);
+    }
   }
 
   console.log('Signal generation complete.');
@@ -774,4 +796,4 @@ async function generateSignals() {
 generateSignals().catch(err => {
   console.error('Fatal error:', err);
   process.exit(1);
-});
+}); 
