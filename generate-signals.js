@@ -286,7 +286,7 @@ async function countSignalsToday(userId) {
   return count || 0;
 }
 
-// ---------- JSON ----------
+// ---------- JSON / AI ----------
 function extractJsonObject(text) {
   if (!text) throw new Error('empty AI response');
   let cleaned = String(text).trim();
@@ -300,7 +300,6 @@ function extractJsonObject(text) {
   return JSON.parse(jsonSlice);
 }
 
-// ---------- AI CALL ----------
 async function callOpenRouter(prompt, retries = 5) {
   for (let attempt = 1; attempt <= retries; attempt++) {
     try {
@@ -313,7 +312,6 @@ async function callOpenRouter(prompt, retries = 5) {
         body: JSON.stringify({
           model: 'openrouter/free',
           messages: [{ role: 'user', content: prompt }],
-          max_tokens: 8000,
           temperature: 0.1,
           response_format: { type: 'json_object' }
         })
@@ -337,19 +335,7 @@ async function callOpenRouter(prompt, retries = 5) {
       }
 
       const data = await response.json();
-      const message = data?.choices?.[0]?.message;
-      let content = message?.content;
-
-      // Safe fallback: only accept reasoning if it parses as valid JSON
-      if (!content && message?.reasoning) {
-        try {
-          const parsed = extractJsonObject(message.reasoning);
-          console.log('  Recovered JSON from reasoning field');
-          return parsed;
-        } catch {
-          // reasoning was thinking text, not the answer. Fall through.
-        }
-      }
+      const content = data?.choices?.[0]?.message?.content;
 
       if (!content) {
         console.error('  RAW RESPONSE (no content):', JSON.stringify(data).slice(0, 400));
@@ -404,7 +390,7 @@ function buildBatchPrompt(items) {
   prompt += "4. If two items refer to the same event for the same company, return the signal in the most informative item and return empty signals for the duplicate.\n";
   prompt += "5. If the text is a menu, a historical timeline, an educational article, a job listing, boilerplate, or a press-kit blurb, return empty signals.\n";
   prompt += "6. If a list of article links is provided and the signal corresponds to a specific article, set 'source_url' to the URL of that article. If no article clearly matches, set 'source_url' to null.\n";
-  prompt += "7. BE TERSE. Output only the JSON object. Do not explain your reasoning. Do not restate the rules.\n\n";
+  prompt += "7. BE TERSE. Do not explain your reasoning. Output only the JSON object.\n\n";
   prompt += "For each item, return a JSON object with: \"signals\" (array of strings from the valid list), \"explanation\" (specific, human sentence), \"confidence\" (0-100), and \"source_url\" (specific article URL from the provided list, or null).\n\n";
 
   for (const item of items) {
@@ -796,4 +782,4 @@ async function generateSignals() {
 generateSignals().catch(err => {
   console.error('Fatal error:', err);
   process.exit(1);
-}); 
+});
