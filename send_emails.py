@@ -17,13 +17,12 @@ REPLY_TO = 'modelatlas7@gmail.com'
 MAX_PER_RUN = 5
 
 SUBJECT = 'your old leads'
-BODY_TEMPLATE = """Some of the leads in your CRM are ready to buy. You just don't know which ones.
 
-I watch companies for signals. Funding, hiring, launches. When something fires at a company you're tracking, you get an email.
+BODY_TEMPLATE = """Every SDR has the same problem. Thousands of cold leads. No way to know which are ready to buy.
 
-Free for 10 companies. Want to try it?
+ModelAtlas watches companies for signals. Funding, hiring, launches. When one fires at a company you already have as a lead, you get an alert. That's the whole product.
 
-ModelAtlas Team"""
+Free for your first 10 companies. Reply and I'll set it up."""
 
 leads_file = sys.argv[1] if len(sys.argv) > 1 else 'leads.json'
 with open(leads_file, 'r') as f:
