@@ -20,22 +20,15 @@ jobs:
           pip install opengtm
           pip install coldreach
 
-      - name: Patch OpenGTM model strings
-        run: |
-          SITE=$(python -c "import site; print(site.getsitepackages()[0])")
-          sed -i 's/gemini-2.0-flash/gemini-3.8-flash/g' $SITE/opengtm/__init__.py
-          sed -i 's/gemini-2.0-pro-exp/gemini-3.8-flash/g' $SITE/opengtm/__init__.py
-          echo "=== Patched __init__.py ==="
-          grep -i "gemini" $SITE/opengtm/__init__.py
-
       - name: Stage 1 - Find Companies with OpenGTM
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GEMINI_MODEL: gemini-3.1-flash-lite
         run: |
           opengtm pipeline \
             --industry "B2B outbound agency" \
             --region "United States" \
-            --limit 30 \
+            --limit 10 \
             --icp-profile agency \
             --output companies-raw.json \
             --no-sync
