@@ -1,37 +1,110 @@
-name: Find Model String
+name: Discover Prospects
 
 on:
   workflow_dispatch:
 
 jobs:
-  find:
+  discover:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
+      - uses: actions/checkout@v4
+
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
 
-      - name: Install OpenGTM
-        run: pip install opengtm
-
-      - name: Locate model string
+      - name: Install tools
         run: |
-          echo "=== Files containing gemini-2.0-flash ==="
+          pip install opengtm
+          pip install coldreach
+
+      - name: Patch OpenGTM model strings
+        run: |
           SITE=$(python -c "import site; print(site.getsitepackages()[0])")
-          grep -rn "gemini-2.0-flash" $SITE/opengtm/ || echo "not found in opengtm package"
+          sed -i 's/gemini-2.0-flash/gemini-3.8-flash/g' $SITE/opengtm/__init__.py
+          sed -i 's/gemini-2.0-pro-exp/gemini-3.8-flash/g' $SITE/opengtm/__init__.py
+          echo "=== Patched __init__.py ==="
+          grep -i "gemini" $SITE/opengtm/__init__.py
 
-          echo ""
-          echo "=== Files containing gemini ==="
-          grep -rln "gemini" $SITE/opengtm/ || echo "no files"
+      - name: Stage 1 - Find Companies with OpenGTM
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: |
+          opengtm pipeline \
+            --industry "B2B outbound agency" \
+            --region "United States" \
+            --limit 30 \
+            --icp-profile agency \
+            --output companies-raw.json \
+            --no-sync
 
-          echo ""
-          echo "=== Any config.py or similar ==="
-          find $SITE/opengtm/ -name "*.py" | head -30
+      - name: Stage 2 - Find SDRs with ColdReach
+        run: |
+          python << 'EOF'
+          import json
+          import subprocess
+          import re
+          
+          with open('companies-raw.json') as f:
+              data = json.load(f)
+          
+          companies = data.get('leads', data.get('results', []))
+          if isinstance(companies, dict):
+              companies = companies.get('leads', [])
+          
+          all_leads = []
+          for company in companies:
+              domain = company.get('domain') or company.get('website') or ''
+              domain = domain.replace('https://', '').replace('http://', '').replace('www.', '').split('/')[0]
+              if not domain:
+                  continue
+              
+              print(f"Finding SDRs at: {domain}")
+              
+              try:
+                  result = subprocess.run(
+                      ['coldreach', 'find', '--domain', domain, '--json'],
+                      capture_output=True,
+                      text=True,
+                      timeout=120
+                  )
+                  if result.returncode != 0:
+                      print(f"  ColdReach failed: {result.stderr[:200]}")
+                      continue
+                  
+                  emails_data = json.loads(result.stdout)
+                  for email_entry in emails_data.get('emails', []):
+                      title = email_entry.get('title', '').lower()
+                      if re.search(r'\b(sdr|bdr|sales development|business development)\b', title):
+                          all_leads.append({
+                              'email': email_entry['email'],
+                              'name': email_entry.get('name', ''),
+                              'title': title,
+                              'company': company.get('company_name', '')
+                          })
+              except Exception as e:
+                  print(f"  Error processing {domain}: {e}")
+          
+          seen = set()
+          unique_leads = []
+          for lead in all_leads:
+              if lead['email'] not in seen:
+                  seen.add(lead['email'])
+                  unique_leads.append(lead)
+          
+          with open('leads.json', 'w') as f:
+              json.dump([{'email': l['email']} for l in unique_leads], f, indent=2)
+          
+          print(f"Found {len(unique_leads)} SDR/BDR leads")
+          print(json.dumps(unique_leads[:5], indent=2))
+          EOF
 
-          echo ""
-          echo "=== Print the file that defines the model ==="
-          FILE=$(grep -rl "gemini-2.0-flash" $SITE/opengtm/ | head -1)
-          if [ -n "$FILE" ]; then
-            echo "FILE: $FILE"
-            cat "$FILE"
-          fi 
+      - name: Commit leads.json
+        run: |
+          git config user.name "github-actions"
+          git config user.email "actions@github.com"
+          git add leads.json companies-raw.json
+          git diff --quiet && git diff --staged --quiet || git commit -m "Update leads.json with SDRs"
+          git push
