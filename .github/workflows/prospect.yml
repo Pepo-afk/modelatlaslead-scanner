@@ -23,6 +23,10 @@ jobs:
       - name: Stage 1 - Find Companies with OpenGTM
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GOOGLE_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          AI_PROVIDER: gemini
+          AI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          AI_MODEL: gemini-3.8-flash
         run: |
           opengtm pipeline \
             --industry "B2B outbound agency" \
@@ -37,23 +41,24 @@ jobs:
           python << 'EOF'
           import json
           import subprocess
-          import sys
           import re
           
           with open('companies-raw.json') as f:
               data = json.load(f)
           
           companies = data.get('leads', data.get('results', []))
+          if isinstance(companies, dict):
+              companies = companies.get('leads', [])
           
           all_leads = []
           for company in companies:
-              domain = company.get('domain') or company.get('website')
+              domain = company.get('domain') or company.get('website') or ''
+              domain = domain.replace('https://', '').replace('http://', '').replace('www.', '').split('/')[0]
               if not domain:
                   continue
               
               print(f"Finding SDRs at: {domain}")
               
-              # Run ColdReach find command and capture JSON output
               try:
                   result = subprocess.run(
                       ['coldreach', 'find', '--domain', domain, '--json'],
@@ -62,13 +67,12 @@ jobs:
                       timeout=120
                   )
                   if result.returncode != 0:
-                      print(f"  ColdReach failed for {domain}: {result.stderr}")
+                      print(f"  ColdReach failed: {result.stderr[:200]}")
                       continue
                   
                   emails_data = json.loads(result.stdout)
                   for email_entry in emails_data.get('emails', []):
                       title = email_entry.get('title', '').lower()
-                      # Filter for SDR/BDR roles
                       if re.search(r'\b(sdr|bdr|sales development|business development)\b', title):
                           all_leads.append({
                               'email': email_entry['email'],
@@ -79,7 +83,6 @@ jobs:
               except Exception as e:
                   print(f"  Error processing {domain}: {e}")
           
-          # Deduplicate by email
           seen = set()
           unique_leads = []
           for lead in all_leads:
@@ -87,7 +90,6 @@ jobs:
                   seen.add(lead['email'])
                   unique_leads.append(lead)
           
-          # Write the final leads.json
           with open('leads.json', 'w') as f:
               json.dump([{'email': l['email']} for l in unique_leads], f, indent=2)
           
