@@ -5,13 +5,13 @@ import sys
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 
-SMTP_SERVER = 'smtp-relay.brevo.com'
+SMTP_SERVER = 'live.smtp.mailtrap.io'
 SMTP_PORT = 587
-SMTP_LOGIN = os.environ['BREVO_SMTP_LOGIN']
-SMTP_PASSWORD = os.environ['BREVO_SMTP_PASSWORD']
+SMTP_LOGIN = os.environ['MAILTRAP_SMTP_USER']
+SMTP_PASSWORD = os.environ['MAILTRAP_SMTP_PASSWORD']
 
 SENDER_EMAIL = 'hello@try.modelatlas.net'
-SENDER_NAME = 'ModelAtlas'
+SENDER_NAME = 'Pietro from ModelAtlas'
 REPLY_TO = 'modelatlas7@gmail.com'
 
 MAX_PER_RUN = 5
@@ -66,4 +66,4 @@ with open('contacted.txt', 'w') as f:
     for email in sorted(contacted):
         f.write(email + '\n')
 
-print(f'Total sent: {sent}')
+print(f'Total sent: {sent}') 
