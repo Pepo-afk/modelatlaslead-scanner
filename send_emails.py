@@ -11,7 +11,7 @@ SMTP_LOGIN = os.environ['BREVO_SMTP_LOGIN']
 SMTP_PASSWORD = os.environ['BREVO_SMTP_PASSWORD']
 
 SENDER_EMAIL = 'hello@try.modelatlas.net'
-SENDER_NAME = 'ModelAtlas Team'
+SENDER_NAME = 'ModelAtlas'
 REPLY_TO = 'modelatlas7@gmail.com'
 
 MAX_PER_RUN = 5
