@@ -17,8 +17,8 @@ jobs:
 
       - name: Send emails
         env:
-          BREVO_SMTP_LOGIN: ${{ secrets.BREVO_SMTP_LOGIN }}
-          BREVO_SMTP_PASSWORD: ${{ secrets.BREVO_SMTP_PASSWORD }}
+          MAILTRAP_SMTP_USER: ${{ secrets.MAILTRAP_SMTP_USER }}
+          MAILTRAP_SMTP_PASSWORD: ${{ secrets.MAILTRAP_SMTP_PASSWORD }}
         run: python send_emails.py leads.json
 
       - name: Commit contacted list
