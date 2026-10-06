@@ -11,18 +11,24 @@ SMTP_LOGIN = os.environ['MAILTRAP_SMTP_USER']
 SMTP_PASSWORD = os.environ['MAILTRAP_SMTP_PASSWORD']
 
 SENDER_EMAIL = 'hello@try.modelatlas.net'
-SENDER_NAME = 'Pietro from ModelAtlas'
+SENDER_NAME = 'ModelAtlas'
 REPLY_TO = 'modelatlas7@gmail.com'
 
 MAX_PER_RUN = 5
 
 SUBJECT = 'your old leads'
 
-BODY_TEMPLATE = """Every SDR has the same problem. Thousands of cold leads. No way to know which are ready to buy.
+BODY_TEMPLATE = """You have thousands of cold leads. Some of them are ready to buy right now. You just don't know which ones.
 
-ModelAtlas watches companies for signals. Funding, hiring, launches. When one fires at a company you already have as a lead, you get an alert. That's the whole product.
+ModelAtlas fixes that.
 
-Free for your first 10 companies. Reply and I'll set it up."""
+Paste your list of companies in. Every day, we check each one for things that mean a budget is about to move. Funding rounds. New hires. Product launches. Partnerships. When something fires, you get an email telling you what happened and where we found it.
+
+That is it. You get a reason to reach out, on the day it matters, without checking anything yourself.
+
+Your competitors are calling the same leads at the same time. The one who shows up the day after the signal fires gets the meeting. Everyone else gets "we already have a vendor."
+
+Try it free for 3 days with full Pro access. Reply "try" and I'll send you the link."""
 
 leads_file = sys.argv[1] if len(sys.argv) > 1 else 'leads.json'
 with open(leads_file, 'r') as f:
@@ -32,7 +38,9 @@ contacted = set()
 try:
     with open('contacted.txt', 'r') as f:
         for line in f:
-            contacted.add(line.strip())
+            line = line.strip()
+            if line:
+                contacted.add(line)
 except FileNotFoundError:
     pass
 
@@ -66,4 +74,4 @@ with open('contacted.txt', 'w') as f:
     for email in sorted(contacted):
         f.write(email + '\n')
 
-print(f'Total sent: {sent}') 
+print(f'Total sent: {sent}')
