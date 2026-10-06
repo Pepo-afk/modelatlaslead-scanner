@@ -1,0 +1,14 @@
+name: Test OpenGTM
+on:
+  workflow_dispatch:
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install opengtm
+      - run: opengtm --help
+      - run: opengtm discover --help
+      - run: opengtm pipeline --help
