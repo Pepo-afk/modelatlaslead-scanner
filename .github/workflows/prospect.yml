@@ -23,12 +23,12 @@ jobs:
       - name: Stage 1 - Find Companies with OpenGTM
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          GEMINI_MODEL: gemini-3.1-flash-lite
+          GEMINI_MODEL: gemini-3.1-flash
         run: |
           opengtm pipeline \
             --industry "B2B outbound agency" \
             --region "United States" \
-            --limit 10 \
+            --limit 5 \
             --icp-profile agency \
             --output companies-raw.json \
             --no-sync
