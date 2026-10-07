@@ -1,61 +1,65 @@
-name: Find Companies and SDRs
+name: Discover Prospects
 
 on:
   workflow_dispatch:
 
 jobs:
-  find:
+  discover:
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-node@v4
         with:
-          python-version: '3.11'
+          node-version: '20'
 
-      - name: Install ColdReach
-        run: pip install coldreach
+      - name: Clone ICP Scout
+        run: git clone https://github.com/GrimmReaper0/icp-scout.git
 
-      - name: Find companies with Hunter Discover
-        env:
-          HUNTER_API_KEY: ${{ secrets.HUNTER_API_KEY }}
+      - name: Start SearXNG
         run: |
-          curl -s -X POST "https://api.hunter.io/v2/discover" \
-            -H "Content-Type: application/json" \
-            -d "{
-              \"api_key\": \"$HUNTER_API_KEY\",
-              \"query\": \"B2B outbound agency\",
-              \"location\": \"United States\",
-              \"limit\": 50
-            }" > hunter-companies.json
+          docker run -d --name searxng -p 8080:8080 \
+            -e SEARXNG_BASE_URL=http://localhost:8080 \
+            searxng/searxng
+          sleep 15
 
-          python << 'EOF'
+      - name: Discover companies with ICP Scout
+        env:
+          SEARXNG_URL: http://localhost:8080
+        run: |
+          cd icp-scout
+          node src/cli.mjs discover \
+            "B2B outbound sales agency in United States" \
+            --exclude directory,marketplace,review \
+            --limit 50 \
+            --output ../icp-companies.json
+
+      - name: Extract domains
+        run: |
+          python3 << 'EOF'
           import json
 
-          with open('hunter-companies.json') as f:
+          with open('icp-companies.json') as f:
               data = json.load(f)
 
-          if 'errors' in data:
-              print("Hunter API error:", data['errors'])
-              exit(1)
-
-          companies = data.get('data', {}).get('companies', [])
+          companies = data if isinstance(data, list) else data.get('companies', data.get('results', []))
           domains = [c.get('domain') for c in companies if c.get('domain')]
 
           with open('domains.txt', 'w') as f:
               for d in domains:
                   f.write(d + '\n')
 
-          print(f"Found {len(domains)} company domains")
+          print(f"Found {len(domains)} domains")
           for d in domains[:15]:
               print(f"  {d}")
           EOF
 
       - name: Find SDRs with ColdReach
         run: |
-          python << 'EOF'
+          pip install coldreach
+          python3 << 'EOF'
           import json
           import subprocess
           import re
@@ -108,6 +112,6 @@ jobs:
         run: |
           git config user.name "github-actions"
           git config user.email "actions@github.com"
-          git add domains.txt leads.json
-          git diff --quiet && git diff --staged --quiet || git commit -m "Update domains and leads"
+          git add domains.txt leads.json icp-companies.json
+          git diff --quiet && git diff --staged --quiet || git commit -m "Update prospects"
           git push
