@@ -18,12 +18,36 @@ jobs:
       - name: Clone ICP Scout
         run: git clone https://github.com/GrimmReaper0/icp-scout.git
 
+      - name: Create SearXNG settings with JSON enabled
+        run: |
+          mkdir -p searxng-config
+          cat > searxng-config/settings.yml << 'EOF'
+          use_default_settings: true
+
+          server:
+            limiter: false
+            image_proxy: false
+            secret_key: "github-actions-secret-key"
+
+          search:
+            formats:
+              - html
+              - json
+          EOF
+
       - name: Start SearXNG
         run: |
           docker run -d --name searxng -p 8080:8080 \
+            -v $(pwd)/searxng-config/settings.yml:/etc/searxng/settings.yml:ro \
             -e SEARXNG_BASE_URL=http://localhost:8080 \
+            -e SEARXNG_SETTINGS_PATH=/etc/searxng/settings.yml \
             searxng/searxng
-          sleep 15
+          sleep 20
+
+      - name: Verify SearXNG JSON works
+        run: |
+          curl -s "http://localhost:8080/search?q=test&format=json" | head -c 200
+          echo ""
 
       - name: Discover companies with ICP Scout
         env:
