@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
-  "id": "2026-10-07T19-09-39-355Z-b2b-outbound-sales-agency-in-4d36a9",
-  "createdAt": "2026-10-07T19:09:39.356Z",
+  "id": "2026-10-07T21-23-04-025Z-b2b-outbound-sales-agency-in-8aa66e",
+  "createdAt": "2026-10-07T21:23:04.025Z",
   "query": "B2B outbound sales agency in United States",
   "provider": "searxng",
   "icp": {
@@ -39,12 +39,12 @@
     "llmModel": null
   },
   "stats": {
-    "discovered": 26,
-    "scanned": 23,
-    "qualified": 19,
-    "filteredOut": 4,
-    "errors": 3,
-    "durationMs": 36225
+    "discovered": 27,
+    "scanned": 25,
+    "qualified": 20,
+    "filteredOut": 5,
+    "errors": 2,
+    "durationMs": 41107
   },
   "leads": [
     {
@@ -364,7 +364,7 @@
         }
       ],
       "warnings": [],
-      "lastChecked": "2026-10-07T19:09:17.443Z"
+      "lastChecked": "2026-10-07T21:22:32.680Z"
     },
     {
       "company": "Best Outbound Sales Agencies 2026",
@@ -567,7 +567,212 @@
         }
       ],
       "warnings": [],
-      "lastChecked": "2026-10-07T19:09:09.085Z"
+      "lastChecked": "2026-10-07T21:22:27.343Z"
+    },
+    {
+      "company": "6 Best Outbound Lead Generation Agencies for B2B SaaS",
+      "domain": "profitbl.com",
+      "website": "https://www.profitbl.com",
+      "description": "In this guide, we highlight 6 lead gen partners you should consider for your outbound efforts.",
+      "locations": [],
+      "emails": [
+        {
+          "address": "info@profitbl.com",
+          "type": "role",
+          "mx": null
+        },
+        {
+          "address": "information@efito128.com",
+          "type": "named",
+          "mx": null
+        }
+      ],
+      "phones": [
+        "+35227641281",
+        "+12124258617"
+      ],
+      "socials": {},
+      "technologies": [
+        {
+          "name": "Webflow",
+          "confidence": "high",
+          "evidence": "<!DOCTYPE html><!-- This site was created in Webflow. https://webflow.com --><!-- Last Published: Sun Oct 04 2026 10:26:37 GMT+0000 (Coordinate…"
+        },
+        {
+          "name": "Cloudflare",
+          "confidence": "high",
+          "evidence": "…</html> age: 295272 alt-svc: h3=\":443\"; ma=86400 cf-cache-status: HIT cf-ray: a46ff64a8c7b3eb5-ORD connection: keep-alive content-encoding: gzip c…"
+        },
+        {
+          "name": "Google Analytics",
+          "confidence": "high",
+          "evidence": "… </style><!-- Google tag (gtag.js) --> <script async src=\"https://www.googletagmanager.com/gtag/js?id=AW-17867402545\"></script> <script> window.dataLayer = window.da…"
+        }
+      ],
+      "score": 74,
+      "scoreBreakdown": {
+        "relevance": 38.1,
+        "include": 14.3,
+        "contactability": 14.3,
+        "evidence": 7.1
+      },
+      "reasons": [
+        "Signals: b2b, outbound, sales, agency",
+        "Relevant terms: b2b, outbound, sales, agency",
+        "2 public emails found"
+      ],
+      "evidence": [
+        {
+          "field": "company",
+          "value": "6 Best Outbound Lead Generation Agencies for B2B SaaS",
+          "sourceUrl": "https://www.profitbl.com/blog/best-outbound-lead-generation-agencies-for-b2b-saas",
+          "quote": "6 Best Outbound Lead Generation Agencies for B2B SaaS - Profitbl"
+        },
+        {
+          "field": "email",
+          "value": "info@profitbl.com",
+          "sourceUrl": "https://www.profitbl.com/blog/best-outbound-lead-generation-agencies-for-b2b-saas",
+          "quote": "…ad Generation Agencies for B2B SaaS - Profitbl   +352 27 64 12 81  info@profitbl.com  (mon-fri) 7:00-20:00 EN Industries & Verticals B2B SaaS Cybersecuri…"
+        },
+        {
+          "field": "technology",
+          "value": "Webflow",
+          "sourceUrl": "https://www.profitbl.com/blog/best-outbound-lead-generation-agencies-for-b2b-saas",
+          "quote": "<!DOCTYPE html><!-- This site was created in Webflow. https://webflow.com --><!-- Last Published: Sun Oct 04 2026 10:26:37 GMT+0000 (Coordinate…"
+        },
+        {
+          "field": "technology",
+          "value": "Cloudflare",
+          "sourceUrl": "https://www.profitbl.com/blog/best-outbound-lead-generation-agencies-for-b2b-saas",
+          "quote": "…></html> age: 83796 alt-svc: h3=\":443\"; ma=86400 cf-cache-status: HIT cf-ray: a46ff647ba103eb5-ORD connection: keep-alive content-encoding: gzip c…"
+        },
+        {
+          "field": "description",
+          "value": "In this guide, we highlight 6 lead gen partners you should consider for your outbound efforts.",
+          "sourceUrl": "https://www.profitbl.com/blog/best-outbound-lead-generation-agencies-for-b2b-saas",
+          "quote": "In this guide, we highlight 6 lead gen partners you should consider for your outbound efforts."
+        },
+        {
+          "field": "email",
+          "value": "info@profitbl.com",
+          "sourceUrl": "https://www.profitbl.com/contact-us",
+          "quote": "Contact Us | Profitbl  +352 27 64 12 81  info@profitbl.com  (mon-fri) 7:00-20:00 EN Industries & Verticals B2B SaaS Cybersecuri…"
+        },
+        {
+          "field": "email",
+          "value": "information@efito128.com",
+          "sourceUrl": "https://www.profitbl.com/contact-us",
+          "quote": "…Email LinkedIn © Profitbl. All Rights Reserved 2023 info@profitbl.com information@efito128.com"
+        },
+        {
+          "field": "technology",
+          "value": "Webflow",
+          "sourceUrl": "https://www.profitbl.com/contact-us",
+          "quote": "<!DOCTYPE html><!-- This site was created in Webflow. https://webflow.com --><!-- Last Published: Sun Oct 04 2026 10:26:37 GMT+0000 (Coordinate…"
+        },
+        {
+          "field": "technology",
+          "value": "Cloudflare",
+          "sourceUrl": "https://www.profitbl.com/contact-us",
+          "quote": "…</html> age: 292246 alt-svc: h3=\":443\"; ma=86400 cf-cache-status: HIT cf-ray: a46ff648ad603eb5-ORD connection: keep-alive content-encoding: gzip c…"
+        },
+        {
+          "field": "description",
+          "value": "Trust Profitbl for reliable and effective sales outsourcing services in Europe. Let us help you grow your business and achieve your revenue goals. Contact us now.",
+          "sourceUrl": "https://www.profitbl.com/contact-us",
+          "quote": "Trust Profitbl for reliable and effective sales outsourcing services in Europe. Let us help you grow your business and achieve your revenue goals. Contact us now."
+        },
+        {
+          "field": "email",
+          "value": "info@profitbl.com",
+          "sourceUrl": "https://www.profitbl.com/b2b-saas-lead-generation-agency",
+          "quote": "…1 B2B Lead Generation Agency for SaaS | Profitbl  +352 27 64 12 81  info@profitbl.com  (mon-fri) 7:00-20:00 EN Industries & Verticals B2B SaaS Cybersecuri…"
+        },
+        {
+          "field": "technology",
+          "value": "Webflow",
+          "sourceUrl": "https://www.profitbl.com/b2b-saas-lead-generation-agency",
+          "quote": "<!DOCTYPE html><!-- This site was created in Webflow. https://webflow.com --><!-- Last Published: Sun Oct 04 2026 10:26:37 GMT+0000 (Coordinate…"
+        },
+        {
+          "field": "technology",
+          "value": "Google Analytics",
+          "sourceUrl": "https://www.profitbl.com/b2b-saas-lead-generation-agency",
+          "quote": "… </style><!-- Google tag (gtag.js) --> <script async src=\"https://www.googletagmanager.com/gtag/js?id=AW-17867402545\"></script> <script> window.dataLayer = window.da…"
+        },
+        {
+          "field": "technology",
+          "value": "Cloudflare",
+          "sourceUrl": "https://www.profitbl.com/b2b-saas-lead-generation-agency",
+          "quote": "…</html> age: 290519 alt-svc: h3=\":443\"; ma=86400 cf-cache-status: HIT cf-ray: a46ff64998ff3eb5-ORD connection: keep-alive content-encoding: gzip c…"
+        },
+        {
+          "field": "description",
+          "value": "Profitbl helps B2B SaaS companies generate qualified leads through a proven outbound engine. Built, tested, and executed by senior SDRs who understand your industry.",
+          "sourceUrl": "https://www.profitbl.com/b2b-saas-lead-generation-agency",
+          "quote": "Profitbl helps B2B SaaS companies generate qualified leads through a proven outbound engine. Built, tested, and executed by senior SDRs who understand your industry."
+        },
+        {
+          "field": "email",
+          "value": "info@profitbl.com",
+          "sourceUrl": "https://www.profitbl.com/cybersecurity-lead-generation-services",
+          "quote": "…overhead of hiring or managing SDRs. Book a Call  +352 27 64 12 81  info@profitbl.com  (mon-fri) 7:00-20:00 EN Industries & Verticals B2B SaaS Cybersecuri…"
+        },
+        {
+          "field": "technology",
+          "value": "Webflow",
+          "sourceUrl": "https://www.profitbl.com/cybersecurity-lead-generation-services",
+          "quote": "<!DOCTYPE html><!-- This site was created in Webflow. https://webflow.com --><!-- Last Published: Sun Oct 04 2026 10:26:37 GMT+0000 (Coordinate…"
+        },
+        {
+          "field": "technology",
+          "value": "Google Analytics",
+          "sourceUrl": "https://www.profitbl.com/cybersecurity-lead-generation-services",
+          "quote": "… </style><!-- Google tag (gtag.js) --> <script async src=\"https://www.googletagmanager.com/gtag/js?id=AW-17867402545\"></script> <script> window.dataLayer = window.da…"
+        },
+        {
+          "field": "technology",
+          "value": "Cloudflare",
+          "sourceUrl": "https://www.profitbl.com/cybersecurity-lead-generation-services",
+          "quote": "…</html> age: 295272 alt-svc: h3=\":443\"; ma=86400 cf-cache-status: HIT cf-ray: a46ff64a8c7b3eb5-ORD connection: keep-alive content-encoding: gzip c…"
+        },
+        {
+          "field": "description",
+          "value": "We help cybersecurity companies generate qualified leads through a proven outbound engine. Built, tested, and executed by senior SDRs who understand your industry.",
+          "sourceUrl": "https://www.profitbl.com/cybersecurity-lead-generation-services",
+          "quote": "We help cybersecurity companies generate qualified leads through a proven outbound engine. Built, tested, and executed by senior SDRs who understand your industry."
+        },
+        {
+          "field": "search_snippet",
+          "value": "Nov 18, 2025 ... Best for: SaaS startups and SMBs needing a global Cold emailing and marketing partner. ... Belkins is one of the most recognized names in outbound ...",
+          "sourceUrl": "https://www.profitbl.com/blog/best-outbound-lead-generation-agencies-for-b2b-saas",
+          "quote": "Nov 18, 2025 ... Best for: SaaS startups and SMBs needing a global Cold emailing and marketing partner. ... Belkins is one of the most recognized names in outbound ..."
+        }
+      ],
+      "pagesScanned": [
+        {
+          "url": "https://www.profitbl.com/blog/best-outbound-lead-generation-agencies-for-b2b-saas",
+          "title": "6 Best Outbound Lead Generation Agencies for B2B SaaS - Profitbl",
+          "bytes": 43808
+        },
+        {
+          "url": "https://www.profitbl.com/contact-us",
+          "title": "Contact Us | Profitbl",
+          "bytes": 32967
+        },
+        {
+          "url": "https://www.profitbl.com/b2b-saas-lead-generation-agency",
+          "title": "#1 B2B Lead Generation Agency for SaaS | Profitbl",
+          "bytes": 58455
+        },
+        {
+          "url": "https://www.profitbl.com/cybersecurity-lead-generation-services",
+          "title": "#1 B2B Cybersecurity Lead Generation Agency | Profitbl",
+          "bytes": 53299
+        }
+      ],
+      "warnings": [],
+      "lastChecked": "2026-10-07T21:22:35.318Z"
     },
     {
       "company": "Punch!",
@@ -754,9 +959,9 @@
         },
         {
           "field": "search_snippet",
-          "value": "\"Working with Punch! was a true accelerator for our sales pipeline. Within just 12 months, they booked 71 opportunities for us, leading to 50 successful initial ...",
+          "value": "How we help you from first touch to closed deal · Find companies that are ready to buy · Reach everyone involved in the decision · Turn meetings into closed deals.",
           "sourceUrl": "https://www.punchb2b.com/en-us",
-          "quote": "\"Working with Punch! was a true accelerator for our sales pipeline. Within just 12 months, they booked 71 opportunities for us, leading to 50 successful initial ..."
+          "quote": "How we help you from first touch to closed deal · Find companies that are ready to buy · Reach everyone involved in the decision · Turn meetings into closed deals."
         }
       ],
       "pagesScanned": [
@@ -782,7 +987,7 @@
         }
       ],
       "warnings": [],
-      "lastChecked": "2026-10-07T19:09:19.087Z"
+      "lastChecked": "2026-10-07T21:22:38.199Z"
     },
     {
       "company": "Quality Contact Solutions",
@@ -945,7 +1150,7 @@
         {
           "url": "https://qualitycontactsolutions.com/telemarketing-services/b2b-outbound-marketing/",
           "title": "B2B Outbound Call Center & Telemarketing Services",
-          "bytes": 264237
+          "bytes": 264236
         },
         {
           "url": "https://qualitycontactsolutions.com/about-us/",
@@ -964,7 +1169,7 @@
         }
       ],
       "warnings": [],
-      "lastChecked": "2026-10-07T19:09:22.765Z"
+      "lastChecked": "2026-10-07T21:22:37.487Z"
     },
     {
       "company": "Integrated Sales Network | Outsourced B2B Sales & Revenue Strategy",
@@ -1044,307 +1249,7 @@
         }
       ],
       "warnings": [],
-      "lastChecked": "2026-10-07T19:09:07.347Z"
-    },
-    {
-      "company": "Semrush",
-      "domain": "agencies.semrush.com",
-      "website": "https://agencies.semrush.com",
-      "description": "List of TOP 298 Outbound Marketing Services in United States 2026. Discover the most skilled marketing agencies from our community to outsource your marketing to.",
-      "locations": [
-        "Boston",
-        "MA",
-        "USA"
-      ],
-      "emails": [
-        {
-          "address": "agencies@semrush.com",
-          "type": "named",
-          "mx": null
-        }
-      ],
-      "phones": [
-        "+1-800-815-9959"
-      ],
-      "socials": {
-        "x": "https://twitter.com/semrush",
-        "facebook": "https://www.facebook.com/Semrush",
-        "linkedin": "https://www.linkedin.com/company/semrush",
-        "instagram": "https://instagram.com/semrush/",
-        "youtube": "https://www.youtube.com/user/SemrushHQ"
-      },
-      "technologies": [
-        {
-          "name": "WordPress",
-          "confidence": "medium",
-          "evidence": "…m7.374 12.837L8 1.99 2.474 14.01h11.052Z\" /> </symbol> <symbol id=\"AP-WordpressL\" viewBox=\"0 0 24 24\"> <path fill=\"currentColor\" d=\"M11.999 1a11 11 0…"
-        },
-        {
-          "name": "Intercom",
-          "confidence": "medium",
-          "evidence": "…google-analytics.bi.owox.com\"> <link rel=\"dns-prefetch\" href=\"https://widget.intercom.io\"> <link rel=\"dns-prefetch\" href=\"https://sp.analytics.yahoo.com\"> <li…"
-        },
-        {
-          "name": "Google Analytics",
-          "confidence": "medium",
-          "evidence": "…s://analytics.tiktok.com\"> <link rel=\"dns-prefetch\" href=\"https://www.google-analytics.com\"> <link rel=\"dns-prefetch\" href=\"https://q.quora.com\"> <link rel=\"dns…"
-        },
-        {
-          "name": "WooCommerce",
-          "confidence": "medium",
-          "evidence": "<!DOCTYPE html> <html lang=\"en\"> <head> <meta charset=\"utf-8\"> <meta name=\"viewport\" content=\"width=device-width, initial-scale=1, viewport-"
-        }
-      ],
-      "score": 70,
-      "scoreBreakdown": {
-        "relevance": 57.1,
-        "include": 21.4,
-        "contactability": 14.3,
-        "evidence": 7.1,
-        "exclusions": -30
-      },
-      "reasons": [
-        "Signals: b2b, outbound, sales, agency",
-        "Relevant terms: b2b, outbound, sales, agency, united",
-        "1 public email found",
-        "Excluded signal: review"
-      ],
-      "evidence": [
-        {
-          "field": "company",
-          "value": "Semrush",
-          "sourceUrl": "https://agencies.semrush.com/list/outbound-marketing/united-states/",
-          "quote": "Best Outbound Marketing Companies in United States 2026 | Semrush"
-        },
-        {
-          "field": "email",
-          "value": "agencies@semrush.com",
-          "sourceUrl": "https://agencies.semrush.com/list/outbound-marketing/united-states/",
-          "quote": "…rs Agency Partners List your agency How it works Terms of use Sitemap agencies@semrush.com Semrush Mainpage Features Pricing News Company Community Help Center …"
-        },
-        {
-          "field": "location",
-          "value": "Boston",
-          "sourceUrl": "https://agencies.semrush.com/list/outbound-marketing/united-states/",
-          "quote": "Boston"
-        },
-        {
-          "field": "location",
-          "value": "MA",
-          "sourceUrl": "https://agencies.semrush.com/list/outbound-marketing/united-states/",
-          "quote": "MA"
-        },
-        {
-          "field": "location",
-          "value": "USA",
-          "sourceUrl": "https://agencies.semrush.com/list/outbound-marketing/united-states/",
-          "quote": "USA"
-        },
-        {
-          "field": "technology",
-          "value": "WordPress",
-          "sourceUrl": "https://agencies.semrush.com/list/outbound-marketing/united-states/",
-          "quote": "…m7.374 12.837L8 1.99 2.474 14.01h11.052Z\" /> </symbol> <symbol id=\"AP-WordpressL\" viewBox=\"0 0 24 24\"> <path fill=\"currentColor\" d=\"M11.999 1a11 11 0…"
-        },
-        {
-          "field": "technology",
-          "value": "Intercom",
-          "sourceUrl": "https://agencies.semrush.com/list/outbound-marketing/united-states/",
-          "quote": "…google-analytics.bi.owox.com\"> <link rel=\"dns-prefetch\" href=\"https://widget.intercom.io\"> <link rel=\"dns-prefetch\" href=\"https://sp.analytics.yahoo.com\"> <li…"
-        },
-        {
-          "field": "technology",
-          "value": "Google Analytics",
-          "sourceUrl": "https://agencies.semrush.com/list/outbound-marketing/united-states/",
-          "quote": "…s://analytics.tiktok.com\"> <link rel=\"dns-prefetch\" href=\"https://www.google-analytics.com\"> <link rel=\"dns-prefetch\" href=\"https://q.quora.com\"> <link rel=\"dns…"
-        },
-        {
-          "field": "description",
-          "value": "List of TOP 298 Outbound Marketing Services in United States 2026. Discover the most skilled marketing agencies from our community to outsource your marketing to.",
-          "sourceUrl": "https://agencies.semrush.com/list/outbound-marketing/united-states/",
-          "quote": "List of TOP 298 Outbound Marketing Services in United States 2026. Discover the most skilled marketing agencies from our community to outsource your marketing to."
-        },
-        {
-          "field": "email",
-          "value": "agencies@semrush.com",
-          "sourceUrl": "https://agencies.semrush.com/list/",
-          "quote": "…rs Agency Partners List your agency How it works Terms of use Sitemap agencies@semrush.com Semrush Mainpage Features Pricing News Company Community Help Center …"
-        },
-        {
-          "field": "location",
-          "value": "Boston",
-          "sourceUrl": "https://agencies.semrush.com/list/",
-          "quote": "Boston"
-        },
-        {
-          "field": "location",
-          "value": "MA",
-          "sourceUrl": "https://agencies.semrush.com/list/",
-          "quote": "MA"
-        },
-        {
-          "field": "location",
-          "value": "USA",
-          "sourceUrl": "https://agencies.semrush.com/list/",
-          "quote": "USA"
-        },
-        {
-          "field": "technology",
-          "value": "WordPress",
-          "sourceUrl": "https://agencies.semrush.com/list/",
-          "quote": "…m7.374 12.837L8 1.99 2.474 14.01h11.052Z\" /> </symbol> <symbol id=\"AP-WordpressL\" viewBox=\"0 0 24 24\"> <path fill=\"currentColor\" d=\"M11.999 1a11 11 0…"
-        },
-        {
-          "field": "technology",
-          "value": "Intercom",
-          "sourceUrl": "https://agencies.semrush.com/list/",
-          "quote": "…google-analytics.bi.owox.com\"> <link rel=\"dns-prefetch\" href=\"https://widget.intercom.io\"> <link rel=\"dns-prefetch\" href=\"https://sp.analytics.yahoo.com\"> <li…"
-        },
-        {
-          "field": "technology",
-          "value": "Google Analytics",
-          "sourceUrl": "https://agencies.semrush.com/list/",
-          "quote": "…s://analytics.tiktok.com\"> <link rel=\"dns-prefetch\" href=\"https://www.google-analytics.com\"> <link rel=\"dns-prefetch\" href=\"https://q.quora.com\"> <link rel=\"dns…"
-        },
-        {
-          "field": "description",
-          "value": "List of TOP 1563 Digital Marketing Agencies in the World 2026. Discover the most skilled marketing agencies from our community to outsource your marketing to.",
-          "sourceUrl": "https://agencies.semrush.com/list/",
-          "quote": "List of TOP 1563 Digital Marketing Agencies in the World 2026. Discover the most skilled marketing agencies from our community to outsource your marketing to."
-        },
-        {
-          "field": "email",
-          "value": "agencies@semrush.com",
-          "sourceUrl": "https://agencies.semrush.com/royal-reef-media/",
-          "quote": "…ncy? Please share your thoughts and suggestions by dropping a line at agencies@semrush.com Contact Agency Schedule call Add to Favorites Fill out contact form I…"
-        },
-        {
-          "field": "location",
-          "value": "Boston",
-          "sourceUrl": "https://agencies.semrush.com/royal-reef-media/",
-          "quote": "Boston"
-        },
-        {
-          "field": "location",
-          "value": "MA",
-          "sourceUrl": "https://agencies.semrush.com/royal-reef-media/",
-          "quote": "MA"
-        },
-        {
-          "field": "location",
-          "value": "USA",
-          "sourceUrl": "https://agencies.semrush.com/royal-reef-media/",
-          "quote": "USA"
-        },
-        {
-          "field": "technology",
-          "value": "WordPress",
-          "sourceUrl": "https://agencies.semrush.com/royal-reef-media/",
-          "quote": "…m7.374 12.837L8 1.99 2.474 14.01h11.052Z\" /> </symbol> <symbol id=\"AP-WordpressL\" viewBox=\"0 0 24 24\"> <path fill=\"currentColor\" d=\"M11.999 1a11 11 0…"
-        },
-        {
-          "field": "technology",
-          "value": "Intercom",
-          "sourceUrl": "https://agencies.semrush.com/royal-reef-media/",
-          "quote": "…google-analytics.bi.owox.com\"> <link rel=\"dns-prefetch\" href=\"https://widget.intercom.io\"> <link rel=\"dns-prefetch\" href=\"https://sp.analytics.yahoo.com\"> <li…"
-        },
-        {
-          "field": "technology",
-          "value": "Google Analytics",
-          "sourceUrl": "https://agencies.semrush.com/royal-reef-media/",
-          "quote": "…s://analytics.tiktok.com\"> <link rel=\"dns-prefetch\" href=\"https://www.google-analytics.com\"> <link rel=\"dns-prefetch\" href=\"https://q.quora.com\"> <link rel=\"dns…"
-        },
-        {
-          "field": "description",
-          "value": "Learn how Royal Reef Media can help you grow your business and discover what they've achieved for their clients. Google Maps. Local Search. AI Visibility.",
-          "sourceUrl": "https://agencies.semrush.com/royal-reef-media/",
-          "quote": "Learn how Royal Reef Media can help you grow your business and discover what they've achieved for their clients. Google Maps. Local Search. AI Visibility."
-        },
-        {
-          "field": "email",
-          "value": "agencies@semrush.com",
-          "sourceUrl": "https://agencies.semrush.com/ciphers-digital/",
-          "quote": "…ncy? Please share your thoughts and suggestions by dropping a line at agencies@semrush.com Contact Agency Schedule call Add to Favorites Fill out contact form I…"
-        },
-        {
-          "field": "location",
-          "value": "Boston",
-          "sourceUrl": "https://agencies.semrush.com/ciphers-digital/",
-          "quote": "Boston"
-        },
-        {
-          "field": "location",
-          "value": "MA",
-          "sourceUrl": "https://agencies.semrush.com/ciphers-digital/",
-          "quote": "MA"
-        },
-        {
-          "field": "location",
-          "value": "USA",
-          "sourceUrl": "https://agencies.semrush.com/ciphers-digital/",
-          "quote": "USA"
-        },
-        {
-          "field": "technology",
-          "value": "WooCommerce",
-          "sourceUrl": "https://agencies.semrush.com/ciphers-digital/",
-          "quote": "<!DOCTYPE html> <html lang=\"en\"> <head> <meta charset=\"utf-8\"> <meta name=\"viewport\" content=\"width=device-width, initial-scale=1, viewport-"
-        },
-        {
-          "field": "technology",
-          "value": "WordPress",
-          "sourceUrl": "https://agencies.semrush.com/ciphers-digital/",
-          "quote": "…m7.374 12.837L8 1.99 2.474 14.01h11.052Z\" /> </symbol> <symbol id=\"AP-WordpressL\" viewBox=\"0 0 24 24\"> <path fill=\"currentColor\" d=\"M11.999 1a11 11 0…"
-        },
-        {
-          "field": "technology",
-          "value": "Intercom",
-          "sourceUrl": "https://agencies.semrush.com/ciphers-digital/",
-          "quote": "…google-analytics.bi.owox.com\"> <link rel=\"dns-prefetch\" href=\"https://widget.intercom.io\"> <link rel=\"dns-prefetch\" href=\"https://sp.analytics.yahoo.com\"> <li…"
-        },
-        {
-          "field": "technology",
-          "value": "Google Analytics",
-          "sourceUrl": "https://agencies.semrush.com/ciphers-digital/",
-          "quote": "…s://analytics.tiktok.com\"> <link rel=\"dns-prefetch\" href=\"https://www.google-analytics.com\"> <link rel=\"dns-prefetch\" href=\"https://q.quora.com\"> <link rel=\"dns…"
-        },
-        {
-          "field": "description",
-          "value": "Learn how Ciphers Digital Marketing can help you grow your business and discover what they've achieved for their clients. AI-Powered SEO. Human Results.",
-          "sourceUrl": "https://agencies.semrush.com/ciphers-digital/",
-          "quote": "Learn how Ciphers Digital Marketing can help you grow your business and discover what they've achieved for their clients. AI-Powered SEO. Human Results."
-        },
-        {
-          "field": "search_snippet",
-          "value": "Serving B2B and B2C companies for 25+ years, we're a cutting-edge AI SEO agency delivering advanced AI SEO services plus traditional SEO. We stay on top of the ...",
-          "sourceUrl": "https://agencies.semrush.com/list/outbound-marketing/united-states/",
-          "quote": "Serving B2B and B2C companies for 25+ years, we're a cutting-edge AI SEO agency delivering advanced AI SEO services plus traditional SEO. We stay on top of the ..."
-        }
-      ],
-      "pagesScanned": [
-        {
-          "url": "https://agencies.semrush.com/list/outbound-marketing/united-states/",
-          "title": "Best Outbound Marketing Companies in United States 2026 | Semrush",
-          "bytes": 631667
-        },
-        {
-          "url": "https://agencies.semrush.com/list/",
-          "title": "Best Digital Marketing Agencies in the World 2026 | Semrush",
-          "bytes": 632595
-        },
-        {
-          "url": "https://agencies.semrush.com/royal-reef-media/",
-          "title": "Royal Reef Media | Semrush Agency Partner",
-          "bytes": 425612
-        },
-        {
-          "url": "https://agencies.semrush.com/ciphers-digital/",
-          "title": "Ciphers Digital Marketing | Semrush Agency Partner",
-          "bytes": 467116
-        }
-      ],
-      "warnings": [],
-      "lastChecked": "2026-10-07T19:09:23.069Z"
+      "lastChecked": "2026-10-07T21:22:26.390Z"
     },
     {
       "company": "SyncGTM",
@@ -1604,7 +1509,7 @@
         }
       ],
       "warnings": [],
-      "lastChecked": "2026-10-07T19:09:07.059Z"
+      "lastChecked": "2026-10-07T21:22:26.570Z"
     },
     {
       "company": "Top Outbound Agencies in United States",
@@ -1644,7 +1549,7 @@
         {
           "name": "Cloudflare",
           "confidence": "high",
-          "evidence": "…tyle></body></html> alt-svc: h3=\":443\"; ma=86400 cf-cache-status: HIT cf-ray: a46f330d38844c96-MSP connection: keep-alive content-encoding: gzip c…"
+          "evidence": "…></html> age: 10383 alt-svc: h3=\":443\"; ma=86400 cf-cache-status: HIT cf-ray: a46ff63ee89fa1d2-MSP connection: keep-alive content-encoding: gzip c…"
         }
       ],
       "score": 70,
@@ -1732,7 +1637,7 @@
           "field": "technology",
           "value": "Cloudflare",
           "sourceUrl": "https://www.salescaptain.io/outbound-sales",
-          "quote": "…tyle></body></html> alt-svc: h3=\":443\"; ma=86400 cf-cache-status: HIT cf-ray: a46f330b5dd74c96-MSP connection: keep-alive content-encoding: gzip c…"
+          "quote": "…></html> age: 13138 alt-svc: h3=\":443\"; ma=86400 cf-cache-status: HIT cf-ray: a46ff63d0de3a1d2-MSP connection: keep-alive content-encoding: gzip c…"
         },
         {
           "field": "description",
@@ -1768,7 +1673,7 @@
           "field": "technology",
           "value": "Cloudflare",
           "sourceUrl": "https://www.salescaptain.io/inbound-sales",
-          "quote": "…tyle></body></html> alt-svc: h3=\":443\"; ma=86400 cf-cache-status: HIT cf-ray: a46f330c4f484c96-MSP connection: keep-alive content-encoding: gzip c…"
+          "quote": "…></html> age: 10386 alt-svc: h3=\":443\"; ma=86400 cf-cache-status: HIT cf-ray: a46ff63dff44a1d2-MSP connection: keep-alive content-encoding: gzip c…"
         },
         {
           "field": "email",
@@ -1798,7 +1703,7 @@
           "field": "technology",
           "value": "Cloudflare",
           "sourceUrl": "https://www.salescaptain.io/crm-enrichment",
-          "quote": "…tyle></body></html> alt-svc: h3=\":443\"; ma=86400 cf-cache-status: HIT cf-ray: a46f330d38844c96-MSP connection: keep-alive content-encoding: gzip c…"
+          "quote": "…></html> age: 10383 alt-svc: h3=\":443\"; ma=86400 cf-cache-status: HIT cf-ray: a46ff63ee89fa1d2-MSP connection: keep-alive content-encoding: gzip c…"
         },
         {
           "field": "description",
@@ -1836,7 +1741,7 @@
         }
       ],
       "warnings": [],
-      "lastChecked": "2026-10-07T19:09:18.337Z"
+      "lastChecked": "2026-10-07T21:22:33.460Z"
     },
     {
       "company": "Agency Flare",
@@ -1982,7 +1887,7 @@
         }
       ],
       "warnings": [],
-      "lastChecked": "2026-10-07T19:09:11.777Z"
+      "lastChecked": "2026-10-07T21:22:29.255Z"
     },
     {
       "company": "Sales Focus Inc.",
@@ -2019,7 +1924,7 @@
         {
           "name": "Cloudflare",
           "confidence": "high",
-          "evidence": "…cache-control: public, max-age=0, s-maxage=86400 cf-cache-status: HIT cf-ray: a46f32f96ff9acca-MSP connection: keep-alive content-encoding: br con…"
+          "evidence": "…cache-control: public, max-age=0, s-maxage=86400 cf-cache-status: HIT cf-ray: a46ff633fab389ec-ORD connection: keep-alive content-encoding: br con…"
         }
       ],
       "score": 66,
@@ -2152,7 +2057,7 @@
           "field": "technology",
           "value": "Cloudflare",
           "sourceUrl": "https://www.salesfocusinc.com/contact-us/",
-          "quote": "…cache-control: public, max-age=0, s-maxage=86400 cf-cache-status: HIT cf-ray: a46f32f96ff9acca-MSP connection: keep-alive content-encoding: br con…"
+          "quote": "…cache-control: public, max-age=0, s-maxage=86400 cf-cache-status: HIT cf-ray: a46ff633fab389ec-ORD connection: keep-alive content-encoding: br con…"
         },
         {
           "field": "description",
@@ -2190,7 +2095,211 @@
         }
       ],
       "warnings": [],
-      "lastChecked": "2026-10-07T19:09:15.135Z"
+      "lastChecked": "2026-10-07T21:22:31.720Z"
+    },
+    {
+      "company": "Purple Sales",
+      "domain": "mypurplesales.com",
+      "website": "https://mypurplesales.com",
+      "description": "A HubSpot and B2B outsourced sales and marketing company for B2B lead generation, SDRs, SEO, and more, removing the need for multiple disconnected vendors.",
+      "locations": [],
+      "emails": [],
+      "phones": [
+        "+18886883526",
+        "+1(647)4568900",
+        "+1 (888) 688 3526"
+      ],
+      "socials": {
+        "facebook": "https://www.facebook.com/people/Purple-Sales/100077497791273/?sk=about",
+        "x": "https://x.com/mypurplesales",
+        "linkedin": "https://www.linkedin.com/company/mypurplesales"
+      },
+      "technologies": [
+        {
+          "name": "WooCommerce",
+          "confidence": "medium",
+          "evidence": "…bute(\"data-webp-thumbnail\"));for(var i=document.querySelectorAll(\"div.woocommerce-product-gallery__image\"),r=0,a=i.length;r<a;r++)ewwwAttr(i[r],\"data-t…"
+        },
+        {
+          "name": "WordPress",
+          "confidence": "high",
+          "evidence": "…4:00\" /> <meta property=\"og:image\" content=\"https://mypurplesales.com/wp-content/uploads/2025/04/Frame-47239-1024x538.jpg\" /> <meta property=\"og:image…"
+        },
+        {
+          "name": "HubSpot",
+          "confidence": "high",
+          "evidence": "… /Rank Math WordPress SEO plugin --> <link rel='dns-prefetch' href='//js.hs-scripts.com' /> <link rel='dns-prefetch' href='//www.googletagmanager.com' /> <li…"
+        },
+        {
+          "name": "Google Analytics",
+          "confidence": "high",
+          "evidence": "… added by Site Kit --> <script id=\"google_gtagjs-js\" src=\"https://www.googletagmanager.com/gtag/js?id=GT-5NXW67GT\" async></script> <script id=\"google_gtagjs-js-after…"
+        },
+        {
+          "name": "Cloudflare",
+          "confidence": "high",
+          "evidence": "<!DOCTYPE html> <html lang=\"en-US\" prefix=\"og: https://ogp.me/ns#\"> <head> <meta charset=\"UTF-8\"> <meta name=\"viewport\" content=\"width=devic"
+        }
+      ],
+      "score": 62,
+      "scoreBreakdown": {
+        "relevance": 57.1,
+        "include": 21.4,
+        "contactability": 6.4,
+        "evidence": 7.1,
+        "exclusions": -30
+      },
+      "reasons": [
+        "Signals: b2b, outbound, sales, agency",
+        "Relevant terms: b2b, outbound, sales, agency, united",
+        "Excluded signal: review"
+      ],
+      "evidence": [
+        {
+          "field": "company",
+          "value": "Purple Sales",
+          "sourceUrl": "https://mypurplesales.com/",
+          "quote": "B2B Outsourced Sales and Marketing Company for B2B Lead Generation"
+        },
+        {
+          "field": "technology",
+          "value": "WooCommerce",
+          "sourceUrl": "https://mypurplesales.com/",
+          "quote": "…bute(\"data-webp-thumbnail\"));for(var i=document.querySelectorAll(\"div.woocommerce-product-gallery__image\"),r=0,a=i.length;r<a;r++)ewwwAttr(i[r],\"data-t…"
+        },
+        {
+          "field": "technology",
+          "value": "WordPress",
+          "sourceUrl": "https://mypurplesales.com/",
+          "quote": "…4:00\" /> <meta property=\"og:image\" content=\"https://mypurplesales.com/wp-content/uploads/2025/06/Growth-Partner-Gold-B2B-Hubspot-agency.jpg\" /> <meta …"
+        },
+        {
+          "field": "technology",
+          "value": "HubSpot",
+          "sourceUrl": "https://mypurplesales.com/",
+          "quote": "… /Rank Math WordPress SEO plugin --> <link rel='dns-prefetch' href='//js.hs-scripts.com' /> <link rel='dns-prefetch' href='//www.googletagmanager.com' /> <li…"
+        },
+        {
+          "field": "technology",
+          "value": "Google Analytics",
+          "sourceUrl": "https://mypurplesales.com/",
+          "quote": "… added by Site Kit --> <script id=\"google_gtagjs-js\" src=\"https://www.googletagmanager.com/gtag/js?id=GT-5NXW67GT\" async></script> <script id=\"google_gtagjs-js-after…"
+        },
+        {
+          "field": "technology",
+          "value": "Cloudflare",
+          "sourceUrl": "https://mypurplesales.com/",
+          "quote": "<!DOCTYPE html> <html lang=\"en-US\" prefix=\"og: https://ogp.me/ns#\"> <head> <meta charset=\"UTF-8\"> <meta name=\"viewport\" content=\"width=devic"
+        },
+        {
+          "field": "description",
+          "value": "A HubSpot and B2B outsourced sales and marketing company for B2B lead generation, SDRs, SEO, and more, removing the need for multiple disconnected vendors.",
+          "sourceUrl": "https://mypurplesales.com/",
+          "quote": "A HubSpot and B2B outsourced sales and marketing company for B2B lead generation, SDRs, SEO, and more, removing the need for multiple disconnected vendors."
+        },
+        {
+          "field": "technology",
+          "value": "WooCommerce",
+          "sourceUrl": "https://mypurplesales.com/about-us-lead-generation-experts/",
+          "quote": "…bute(\"data-webp-thumbnail\"));for(var i=document.querySelectorAll(\"div.woocommerce-product-gallery__image\"),r=0,a=i.length;r<a;r++)ewwwAttr(i[r],\"data-t…"
+        },
+        {
+          "field": "technology",
+          "value": "WordPress",
+          "sourceUrl": "https://mypurplesales.com/about-us-lead-generation-experts/",
+          "quote": "…4:00\" /> <meta property=\"og:image\" content=\"https://mypurplesales.com/wp-content/uploads/2025/04/Frame-47239-1024x538.jpg\" /> <meta property=\"og:image…"
+        },
+        {
+          "field": "technology",
+          "value": "HubSpot",
+          "sourceUrl": "https://mypurplesales.com/about-us-lead-generation-experts/",
+          "quote": "… /Rank Math WordPress SEO plugin --> <link rel='dns-prefetch' href='//js.hs-scripts.com' /> <link rel='dns-prefetch' href='//www.googletagmanager.com' /> <li…"
+        },
+        {
+          "field": "technology",
+          "value": "Google Analytics",
+          "sourceUrl": "https://mypurplesales.com/about-us-lead-generation-experts/",
+          "quote": "… added by Site Kit --> <script id=\"google_gtagjs-js\" src=\"https://www.googletagmanager.com/gtag/js?id=GT-5NXW67GT\" async></script> <script id=\"google_gtagjs-js-after…"
+        },
+        {
+          "field": "technology",
+          "value": "Cloudflare",
+          "sourceUrl": "https://mypurplesales.com/about-us-lead-generation-experts/",
+          "quote": "<!DOCTYPE html> <html lang=\"en-US\" prefix=\"og: https://ogp.me/ns#\"> <head> <meta charset=\"UTF-8\"> <meta name=\"viewport\" content=\"width=devic"
+        },
+        {
+          "field": "description",
+          "value": "Meet the lead generation experts at Purple Sales — a growth partner and Gold B2B HubSpot agency helping B2B and SaaS companies grow smarter and faster.",
+          "sourceUrl": "https://mypurplesales.com/about-us-lead-generation-experts/",
+          "quote": "Meet the lead generation experts at Purple Sales — a growth partner and Gold B2B HubSpot agency helping B2B and SaaS companies grow smarter and faster."
+        },
+        {
+          "field": "technology",
+          "value": "WooCommerce",
+          "sourceUrl": "https://mypurplesales.com/contact-us-business-growth-experts/",
+          "quote": "…bute(\"data-webp-thumbnail\"));for(var i=document.querySelectorAll(\"div.woocommerce-product-gallery__image\"),r=0,a=i.length;r<a;r++)ewwwAttr(i[r],\"data-t…"
+        },
+        {
+          "field": "technology",
+          "value": "WordPress",
+          "sourceUrl": "https://mypurplesales.com/contact-us-business-growth-experts/",
+          "quote": "…4:00\" /> <meta property=\"og:image\" content=\"https://mypurplesales.com/wp-content/uploads/2025/04/Frame-47239-1024x538.jpg\" /> <meta property=\"og:image…"
+        },
+        {
+          "field": "technology",
+          "value": "HubSpot",
+          "sourceUrl": "https://mypurplesales.com/contact-us-business-growth-experts/",
+          "quote": "… /Rank Math WordPress SEO plugin --> <link rel='dns-prefetch' href='//js.hs-scripts.com' /> <link rel='dns-prefetch' href='//www.googletagmanager.com' /> <li…"
+        },
+        {
+          "field": "technology",
+          "value": "Google Analytics",
+          "sourceUrl": "https://mypurplesales.com/contact-us-business-growth-experts/",
+          "quote": "… added by Site Kit --> <script id=\"google_gtagjs-js\" src=\"https://www.googletagmanager.com/gtag/js?id=GT-5NXW67GT\" async></script> <script id=\"google_gtagjs-js-after…"
+        },
+        {
+          "field": "technology",
+          "value": "Cloudflare",
+          "sourceUrl": "https://mypurplesales.com/contact-us-business-growth-experts/",
+          "quote": "<!DOCTYPE html> <html lang=\"en-US\" prefix=\"og: https://ogp.me/ns#\"> <head> <meta charset=\"UTF-8\"> <meta name=\"viewport\" content=\"width=devic"
+        },
+        {
+          "field": "description",
+          "value": "Ready to grow? Contact the business growth experts at Purple Sales — trusted by B2B and SaaS companies for lead generation, SDR programs, branding and GTM execution.",
+          "sourceUrl": "https://mypurplesales.com/contact-us-business-growth-experts/",
+          "quote": "Ready to grow? Contact the business growth experts at Purple Sales — trusted by B2B and SaaS companies for lead generation, SDR programs, branding and GTM execution."
+        },
+        {
+          "field": "search_snippet",
+          "value": "A HubSpot and B2B outsourced sales and marketing company for B2B lead generation, SDRs, SEO, and more, removing the need for multiple disconnected vendors.",
+          "sourceUrl": "https://mypurplesales.com/",
+          "quote": "A HubSpot and B2B outsourced sales and marketing company for B2B lead generation, SDRs, SEO, and more, removing the need for multiple disconnected vendors."
+        }
+      ],
+      "pagesScanned": [
+        {
+          "url": "https://mypurplesales.com/",
+          "title": "B2B Outsourced Sales and Marketing Company for B2B Lead Generation",
+          "bytes": 433504
+        },
+        {
+          "url": "https://mypurplesales.com/about-us-lead-generation-experts/",
+          "title": "About Us | B2B Growth & Lead Generation Experts at Purple Sales",
+          "bytes": 295193
+        },
+        {
+          "url": "https://mypurplesales.com/contact-us-business-growth-experts/",
+          "title": "Contact Business Growth Experts for B2B Lead Generation | Purple Sales",
+          "bytes": 171946
+        },
+        {
+          "url": "https://mypurplesales.com/contact-us-business-growth-experts/",
+          "title": "Contact Business Growth Experts for B2B Lead Generation | Purple Sales",
+          "bytes": 171946
+        }
+      ],
+      "warnings": [],
+      "lastChecked": "2026-10-07T21:22:43.068Z"
     },
     {
       "company": "Top 10 Best Outbound Sales Agencies in the United States",
@@ -2398,7 +2507,7 @@
         }
       ],
       "warnings": [],
-      "lastChecked": "2026-10-07T19:09:03.947Z"
+      "lastChecked": "2026-10-07T21:22:23.707Z"
     },
     {
       "company": "B2B Lead Generation & Sales Partner",
@@ -2625,7 +2734,7 @@
         }
       ],
       "warnings": [],
-      "lastChecked": "2026-10-07T19:09:22.120Z"
+      "lastChecked": "2026-10-07T21:22:39.677Z"
     },
     {
       "company": "memoryBlue",
@@ -2909,16 +3018,16 @@
         {
           "url": "https://memoryblue.com/use-cases/bridge-a-team-gap/",
           "title": "Bridge a Sales Team Gap While You Hire - memoryBlue",
-          "bytes": 306489
+          "bytes": 306468
         },
         {
           "url": "https://memoryblue.com/get-in-touch/",
           "title": "Contact memoryBlue | Get in Touch",
-          "bytes": 242705
+          "bytes": 242660
         }
       ],
       "warnings": [],
-      "lastChecked": "2026-10-07T19:09:39.353Z"
+      "lastChecked": "2026-10-07T21:22:57.838Z"
     },
     {
       "company": "Danish Lead Co.",
@@ -3086,7 +3195,7 @@
         }
       ],
       "warnings": [],
-      "lastChecked": "2026-10-07T19:09:18.204Z"
+      "lastChecked": "2026-10-07T21:22:32.962Z"
     },
     {
       "company": "Callbox Inc.",
@@ -3388,7 +3497,7 @@
         }
       ],
       "warnings": [],
-      "lastChecked": "2026-10-07T19:09:12.653Z"
+      "lastChecked": "2026-10-07T21:22:30.938Z"
     },
     {
       "company": "Hire With Near",
@@ -3429,7 +3538,7 @@
         {
           "name": "Cloudflare",
           "confidence": "high",
-          "evidence": "…ript></body></html> alt-svc: h3=\":443\"; ma=86400 cf-cache-status: HIT cf-ray: a46f32d8988aeb6a-ORD connection: keep-alive content-encoding: gzip c…"
+          "evidence": "…ript></body></html> alt-svc: h3=\":443\"; ma=86400 cf-cache-status: HIT cf-ray: a46ff61ffd55accc-MSP connection: keep-alive content-encoding: gzip c…"
         }
       ],
       "score": 44,
@@ -3571,7 +3680,7 @@
           "field": "technology",
           "value": "Cloudflare",
           "sourceUrl": "https://www.hirewithnear.com/contact-us",
-          "quote": "…ript></body></html> alt-svc: h3=\":443\"; ma=86400 cf-cache-status: HIT cf-ray: a46f32d8988aeb6a-ORD connection: keep-alive content-encoding: gzip c…"
+          "quote": "…ript></body></html> alt-svc: h3=\":443\"; ma=86400 cf-cache-status: HIT cf-ray: a46ff61ffd55accc-MSP connection: keep-alive content-encoding: gzip c…"
         },
         {
           "field": "description",
@@ -3595,7 +3704,7 @@
         {
           "url": "https://www.hirewithnear.com/our-story",
           "title": "Hire with Near - Our Story",
-          "bytes": 129556
+          "bytes": 129483
         },
         {
           "url": "https://www.hirewithnear.com/about-us",
@@ -3609,7 +3718,7 @@
         }
       ],
       "warnings": [],
-      "lastChecked": "2026-10-07T19:09:09.932Z"
+      "lastChecked": "2026-10-07T21:22:28.565Z"
     },
     {
       "company": "MarketJoy - Appointment Setting Agency",
@@ -3902,7 +4011,7 @@
         }
       ],
       "warnings": [],
-      "lastChecked": "2026-10-07T19:09:15.942Z"
+      "lastChecked": "2026-10-07T21:22:30.081Z"
     },
     {
       "company": "Opp",
@@ -3943,7 +4052,7 @@
         {
           "name": "Cloudflare",
           "confidence": "high",
-          "evidence": "…ache-control: public, max-age=0, must-revalidate cf-cache-status: HIT cf-ray: a46f32eff9b1f444-MEM connection: keep-alive content-encoding: br con…"
+          "evidence": "…ache-control: public, max-age=0, must-revalidate cf-cache-status: HIT cf-ray: a46ff62c1c9f0b6f-ATL connection: keep-alive content-encoding: br con…"
         }
       ],
       "score": 40,
@@ -3989,7 +4098,7 @@
           "field": "technology",
           "value": "Cloudflare",
           "sourceUrl": "https://outboundsync.com/agencies/opp/",
-          "quote": "…ache-control: public, max-age=0, must-revalidate cf-cache-status: HIT cf-ray: a46f32ebd99cf444-MEM connection: keep-alive content-encoding: br con…"
+          "quote": "…ache-control: public, max-age=0, must-revalidate cf-cache-status: HIT cf-ray: a46ff625f9180b6f-ATL connection: keep-alive content-encoding: br con…"
         },
         {
           "field": "description",
@@ -4079,7 +4188,7 @@
           "field": "technology",
           "value": "Cloudflare",
           "sourceUrl": "https://outboundsync.com/contact/",
-          "quote": "…ache-control: public, max-age=0, must-revalidate cf-cache-status: HIT cf-ray: a46f32ef0ff3f444-MEM connection: keep-alive content-encoding: br con…"
+          "quote": "…ache-control: public, max-age=0, must-revalidate cf-cache-status: HIT cf-ray: a46ff62b29a50b6f-ATL connection: keep-alive content-encoding: br con…"
         },
         {
           "field": "description",
@@ -4103,7 +4212,7 @@
           "field": "technology",
           "value": "Cloudflare",
           "sourceUrl": "https://outboundsync.com/llms.txt",
-          "quote": "…ache-control: public, max-age=0, must-revalidate cf-cache-status: HIT cf-ray: a46f32eff9b1f444-MEM connection: keep-alive content-encoding: br con…"
+          "quote": "…ache-control: public, max-age=0, must-revalidate cf-cache-status: HIT cf-ray: a46ff62c1c9f0b6f-ATL connection: keep-alive content-encoding: br con…"
         },
         {
           "field": "search_snippet",
@@ -4135,7 +4244,7 @@
         }
       ],
       "warnings": [],
-      "lastChecked": "2026-10-07T19:09:13.646Z"
+      "lastChecked": "2026-10-07T21:22:30.448Z"
     },
     {
       "company": "Directive",
@@ -4375,7 +4484,7 @@
         }
       ],
       "warnings": [],
-      "lastChecked": "2026-10-07T19:09:16.545Z"
+      "lastChecked": "2026-10-07T21:22:31.898Z"
     }
   ],
   "allScores": [
@@ -4388,6 +4497,11 @@
       "company": "Best Outbound Sales Agencies 2026",
       "domain": "builtforb2b.com",
       "score": 92
+    },
+    {
+      "company": "6 Best Outbound Lead Generation Agencies for B2B SaaS",
+      "domain": "profitbl.com",
+      "score": 74
     },
     {
       "company": "Punch!",
@@ -4403,11 +4517,6 @@
       "company": "Integrated Sales Network | Outsourced B2B Sales & Revenue Strategy",
       "domain": "integratedsalesnetwork.com",
       "score": 71
-    },
-    {
-      "company": "Semrush",
-      "domain": "agencies.semrush.com",
-      "score": 70
     },
     {
       "company": "SyncGTM",
@@ -4428,6 +4537,11 @@
       "company": "Sales Focus Inc.",
       "domain": "salesfocusinc.com",
       "score": 66
+    },
+    {
+      "company": "Purple Sales",
+      "domain": "mypurplesales.com",
+      "score": 62
     },
     {
       "company": "Top 10 Best Outbound Sales Agencies in the United States",
@@ -4480,6 +4594,11 @@
       "score": 34
     },
     {
+      "company": "SalesRoads | America's Most-Trusted Sales Outsourcing Partner",
+      "domain": "salesroads.com",
+      "score": 32
+    },
+    {
       "company": "ZoomInfo",
       "domain": "pipeline.zoominfo.com",
       "score": 19
@@ -4505,12 +4624,7 @@
       "url": "https://clutch.co/us/call-centers/lead-generation",
       "message": "robots.txt does not allow crawling https://clutch.co/us/call-centers/lead-generation",
       "code": "ROBOTS_DISALLOWED"
-    },
-    {
-      "url": "https://growleads.io/blog/best-outbound-lead-generation-agencies/",
-      "message": "robots.txt does not allow crawling https://growleads.io/blog/best-outbound-lead-generation-agencies/",
-      "code": "ROBOTS_DISALLOWED"
     }
   ],
-  "savedTo": "/home/runner/work/modelatlaslead-scanner/modelatlaslead-scanner/icp-scout/.icpscout/runs/2026-10-07T19-09-39-355Z-b2b-outbound-sales-agency-in-4d36a9.json"
+  "savedTo": "/home/runner/work/modelatlaslead-scanner/modelatlaslead-scanner/icp-scout/.icpscout/runs/2026-10-07T21-23-04-025Z-b2b-outbound-sales-agency-in-8aa66e.json"
 }
