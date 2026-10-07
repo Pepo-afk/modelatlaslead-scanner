@@ -1,102 +1,86 @@
-name: Discover Prospects
+name: Find SDRs
 
 on:
   workflow_dispatch:
 
 jobs:
-  discover:
+  find:
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '20'
-
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
 
-      - name: Clone ICP Scout
-        run: git clone https://github.com/GrimmReaper0/icp-scout.git
+      - name: Clone Intel-Harvester
+        run: git clone https://github.com/itallstartedwithaidea/intel-harvester.git
 
-      - name: Create SearXNG settings with JSON enabled
+      - name: Install dependencies
         run: |
-          mkdir -p searxng-config
-          cat > searxng-config/settings.yml << 'EOF'
-          use_default_settings: true
+          cd intel-harvester
+          pip install -r requirements.txt
 
-          server:
-            limiter: false
-            image_proxy: false
-            secret_key: "github-actions-secret-key"
-
-          search:
-            formats:
-              - html
-              - json
-          EOF
-
-      - name: Start SearXNG
+      - name: Run Intel-Harvester on domains
         run: |
-          docker run -d --name searxng -p 8080:8080 \
-            -v $(pwd)/searxng-config/settings.yml:/etc/searxng/settings.yml:ro \
-            -e SEARXNG_BASE_URL=http://localhost:8080 \
-            -e SEARXNG_SETTINGS_PATH=/etc/searxng/settings.yml \
-            searxng/searxng
-          sleep 20
+          cd intel-harvester
+          python harvest.py ../domains.txt \
+            --output ../contacts.csv \
+            --skip-ads \
+            --delay 2 \
+            --max-pages 10
 
-      - name: Discover companies with ICP Scout
-        env:
-          SEARXNG_URL: http://localhost:8080
+      - name: Filter for SDR/BDR titles
         run: |
-          cd icp-scout
-          node src/cli.mjs discover \
-            "B2B outbound sales agency in United States" \
-            --exclude directory,marketplace,review \
-            --limit 50 \
-            --output ../icp-companies.json
-
-      - name: Debug ICP Scout JSON structure
-        run: |
-          echo "=== First 2000 chars of icp-companies.json ==="
-          head -c 2000 icp-companies.json
-          echo ""
-          echo ""
-          echo "=== JSON structure ==="
           python3 << 'EOF'
+          import csv
           import json
-          with open('icp-companies.json') as f:
-              data = json.load(f)
-          print('Type:', type(data).__name__)
-          if isinstance(data, list):
-              print('List length:', len(data))
-              if data:
-                  print('First item keys:', list(data[0].keys()))
-                  print('First item:')
-                  print(json.dumps(data[0], indent=2)[:800])
-          elif isinstance(data, dict):
-              print('Dict keys:', list(data.keys()))
-              for k in data.keys():
-                  v = data[k]
-                  if isinstance(v, list) and v:
-                      print(f'{k}[0] keys:', list(v[0].keys()) if isinstance(v[0], dict) else type(v[0]).__name__)
-                      print(f'{k}[0] sample:', json.dumps(v[0], indent=2)[:500] if isinstance(v[0], dict) else str(v[0])[:200])
+
+          with open('contacts.csv') as f:
+              reader = csv.DictReader(f)
+              contacts = list(reader)
+
+          print(f"Total contacts: {len(contacts)}")
+          print(f"Columns: {list(contacts[0].keys()) if contacts else 'none'}")
+
+          sdr_keywords = ['sdr', 'bdr', 'sales development', 'business development',
+                          'outbound', 'lead gen', 'appointment set', 'prospecting']
+
+          sdrs = []
+          seen = set()
+          for c in contacts:
+              title = (c.get('title') or '').lower()
+              email = c.get('email') or ''
+              if not email or email in seen:
+                  continue
+              if any(kw in title for kw in sdr_keywords):
+                  sdrs.append({
+                      'email': email,
+                      'name': c.get('name', ''),
+                      'title': c.get('title', ''),
+                      'domain': c.get('domain', ''),
+                      'confidence': c.get('confidence', '')
+                  })
+                  seen.add(email)
+
+          with open('leads.json', 'w') as f:
+              json.dump([{'email': s['email']} for s in sdrs], f, indent=2)
+
+          print(f"\nSDR/BDR leads found: {len(sdrs)}")
+          for s in sdrs[:20]:
+              print(f"  {s['name']:25s} | {s['title']:30s} | {s['email']}")
+
+          # Also save the full enriched list
+          with open('sdrs-full.json', 'w') as f:
+              json.dump(sdrs, f, indent=2)
           EOF
 
-      - name: Debug ColdReach CLI
+      - name: Commit results
         run: |
-          pip install coldreach
-          echo "=== coldreach --help ==="
-          coldreach --help 2>&1 || echo "FAILED"
-          echo ""
-          echo "=== coldreach find --help ==="
-          coldreach find --help 2>&1 || echo "find subcommand does not exist"
-          echo ""
-          echo "=== coldreach --version ==="
-          coldreach --version 2>&1 || echo "no version"
-          echo ""
-          echo "=== All available subcommands ==="
-          coldreach --help 2>&1 | grep -A 50 "Commands:" || true
+          git config user.name "github-actions"
+          git config user.email "actions@github.com"
+          git add leads.json sdrs-full.json contacts.csv
+          git diff --quiet && git diff --staged --quiet || git commit -m "Update SDR leads"
+          git push
