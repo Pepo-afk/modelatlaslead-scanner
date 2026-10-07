@@ -11,9 +11,84 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
+
+      - name: Clone ICP Scout
+        run: git clone https://github.com/GrimmReaper0/icp-scout.git
+
+      - name: Create SearXNG settings
+        run: |
+          mkdir -p searxng-config
+          cat > searxng-config/settings.yml << 'EOF'
+          use_default_settings: true
+
+          server:
+            limiter: false
+            image_proxy: false
+            secret_key: "github-actions-secret-key"
+
+          search:
+            formats:
+              - html
+              - json
+          EOF
+
+      - name: Start SearXNG
+        run: |
+          docker run -d --name searxng -p 8080:8080 \
+            -v $(pwd)/searxng-config/settings.yml:/etc/searxng/settings.yml:ro \
+            -e SEARXNG_BASE_URL=http://localhost:8080 \
+            -e SEARXNG_SETTINGS_PATH=/etc/searxng/settings.yml \
+            searxng/searxng
+          sleep 20
+
+      - name: Discover companies with ICP Scout
+        env:
+          SEARXNG_URL: http://localhost:8080
+        run: |
+          cd icp-scout
+          node src/cli.mjs discover \
+            "B2B outbound sales agency in United States" \
+            --exclude directory,marketplace,review \
+            --limit 50 \
+            --output ../icp-companies.json
+          cd ..
+
+      - name: Extract domains
+        run: |
+          python3 << 'EOF'
+          import json
+
+          with open('icp-companies.json') as f:
+              data = json.load(f)
+
+          leads = data.get('leads', [])
+          print(f"Total leads in ICP Scout output: {len(leads)}")
+
+          domains = []
+          for l in leads:
+              d = l.get('domain')
+              s = l.get('score', 0)
+              if d:
+                  domains.append(d)
+                  print(f"  {d}  (score {s})")
+
+          with open('domains.txt', 'w') as f:
+              for d in domains:
+                  f.write(d + '\n')
+
+          print(f"\nWrote {len(domains)} domains to domains.txt")
+          EOF
+
+          echo ""
+          echo "=== domains.txt contents ==="
+          cat domains.txt
 
       - name: Clone Intel-Harvester
         run: |
@@ -26,36 +101,41 @@ jobs:
           cd intel-harvester
           python harvest.py ../domains.txt \
             --output ../contacts.csv \
-            --json-output ../intel.json \
-            --delay 3 \
-            --verbose
+            --delay 3
 
-      - name: Debug output structure
+      - name: Debug contacts.csv
         run: |
-          echo "=== contacts.csv first 5 rows ==="
-          head -5 contacts.csv
+          echo "=== contacts.csv head ==="
+          head -5 contacts.csv || echo "NO FILE"
           echo ""
           echo "=== Row count ==="
-          wc -l contacts.csv
+          wc -l contacts.csv || echo "0"
 
       - name: Filter for SDR/BDR titles
         run: |
           python3 << 'EOF'
           import csv
           import json
+          import os
+
+          if not os.path.exists('contacts.csv'):
+              print("contacts.csv missing - Intel-Harvester produced nothing")
+              with open('leads.json', 'w') as f:
+                  json.dump([], f)
+              exit(0)
 
           with open('contacts.csv') as f:
               reader = csv.DictReader(f)
               contacts = list(reader)
 
-          print(f"Total contacts found: {len(contacts)}")
+          print(f"Total contacts: {len(contacts)}")
           if contacts:
               print(f"Columns: {list(contacts[0].keys())}")
 
           sdr_keywords = [
               'sdr', 'bdr', 'sales development', 'business development',
               'outbound', 'lead gen', 'appointment set', 'prospecting',
-              'sales rep', 'account executive', 'ae ', 'sales associate'
+              'sales rep', 'account executive', 'sales associate'
           ]
 
           sdrs = []
@@ -65,14 +145,12 @@ jobs:
               email = c.get('email') or ''
               if not email or email in seen:
                   continue
-              confidence = c.get('confidence') or ''
               if any(kw in title for kw in sdr_keywords):
                   sdrs.append({
                       'email': email,
                       'name': c.get('name', ''),
                       'title': c.get('title', ''),
                       'domain': c.get('domain', ''),
-                      'confidence': confidence,
                       'linkedin': c.get('linkedin', '')
                   })
                   seen.add(email)
@@ -83,15 +161,16 @@ jobs:
           with open('sdrs-full.json', 'w') as f:
               json.dump(sdrs, f, indent=2)
 
-          print(f"\nSDR/BDR leads found: {len(sdrs)}")
+          print(f"\nSDR/BDR leads: {len(sdrs)}")
           for s in sdrs[:30]:
-              print(f"  {s['name']:25s} | {s['title']:30s} | {s['email']:35s} | conf: {s['confidence']}")
+              print(f"  {s['name']:25s} | {s['title']:30s} | {s['email']}")
           EOF
 
       - name: Commit results
         run: |
           git config user.name "github-actions"
           git config user.email "actions@github.com"
-          git add leads.json sdrs-full.json contacts.csv intel.json
-          git diff --quiet && git diff --staged --quiet || git commit -m "Update SDR leads"
+          git add -f domains.txt icp-companies.json leads.json sdrs-full.json
+          git add -f contacts.csv 2>/dev/null || true
+          git diff --quiet && git diff --staged --quiet || git commit -m "Update prospects and SDR leads"
           git push
