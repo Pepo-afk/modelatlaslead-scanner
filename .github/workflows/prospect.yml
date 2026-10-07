@@ -1,4 +1,4 @@
-name: Find SDRs
+name: Find SDR Leads
 
 on:
   workflow_dispatch:
@@ -16,21 +16,27 @@ jobs:
           python-version: '3.11'
 
       - name: Clone Intel-Harvester
-        run: git clone https://github.com/itallstartedwithaidea/intel-harvester.git
-
-      - name: Install dependencies
         run: |
+          git clone https://github.com/itallstartedwithaidea/intel-harvester.git
           cd intel-harvester
           pip install -r requirements.txt
 
-      - name: Run Intel-Harvester on domains
+      - name: Run Intel-Harvester
         run: |
           cd intel-harvester
           python harvest.py ../domains.txt \
             --output ../contacts.csv \
-            --skip-ads \
-            --delay 2 \
-            --max-pages 10
+            --json-output ../intel.json \
+            --delay 3 \
+            --verbose
+
+      - name: Debug output structure
+        run: |
+          echo "=== contacts.csv first 5 rows ==="
+          head -5 contacts.csv
+          echo ""
+          echo "=== Row count ==="
+          wc -l contacts.csv
 
       - name: Filter for SDR/BDR titles
         run: |
@@ -42,11 +48,15 @@ jobs:
               reader = csv.DictReader(f)
               contacts = list(reader)
 
-          print(f"Total contacts: {len(contacts)}")
-          print(f"Columns: {list(contacts[0].keys()) if contacts else 'none'}")
+          print(f"Total contacts found: {len(contacts)}")
+          if contacts:
+              print(f"Columns: {list(contacts[0].keys())}")
 
-          sdr_keywords = ['sdr', 'bdr', 'sales development', 'business development',
-                          'outbound', 'lead gen', 'appointment set', 'prospecting']
+          sdr_keywords = [
+              'sdr', 'bdr', 'sales development', 'business development',
+              'outbound', 'lead gen', 'appointment set', 'prospecting',
+              'sales rep', 'account executive', 'ae ', 'sales associate'
+          ]
 
           sdrs = []
           seen = set()
@@ -55,32 +65,33 @@ jobs:
               email = c.get('email') or ''
               if not email or email in seen:
                   continue
+              confidence = c.get('confidence') or ''
               if any(kw in title for kw in sdr_keywords):
                   sdrs.append({
                       'email': email,
                       'name': c.get('name', ''),
                       'title': c.get('title', ''),
                       'domain': c.get('domain', ''),
-                      'confidence': c.get('confidence', '')
+                      'confidence': confidence,
+                      'linkedin': c.get('linkedin', '')
                   })
                   seen.add(email)
 
           with open('leads.json', 'w') as f:
               json.dump([{'email': s['email']} for s in sdrs], f, indent=2)
 
-          print(f"\nSDR/BDR leads found: {len(sdrs)}")
-          for s in sdrs[:20]:
-              print(f"  {s['name']:25s} | {s['title']:30s} | {s['email']}")
-
-          # Also save the full enriched list
           with open('sdrs-full.json', 'w') as f:
               json.dump(sdrs, f, indent=2)
+
+          print(f"\nSDR/BDR leads found: {len(sdrs)}")
+          for s in sdrs[:30]:
+              print(f"  {s['name']:25s} | {s['title']:30s} | {s['email']:35s} | conf: {s['confidence']}")
           EOF
 
       - name: Commit results
         run: |
           git config user.name "github-actions"
           git config user.email "actions@github.com"
-          git add leads.json sdrs-full.json contacts.csv
+          git add leads.json sdrs-full.json contacts.csv intel.json
           git diff --quiet && git diff --staged --quiet || git commit -m "Update SDR leads"
           git push
