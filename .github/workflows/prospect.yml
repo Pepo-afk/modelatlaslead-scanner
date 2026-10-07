@@ -15,6 +15,10 @@ jobs:
         with:
           node-version: '20'
 
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
       - name: Clone ICP Scout
         run: git clone https://github.com/GrimmReaper0/icp-scout.git
 
@@ -44,11 +48,6 @@ jobs:
             searxng/searxng
           sleep 20
 
-      - name: Verify SearXNG JSON works
-        run: |
-          curl -s "http://localhost:8080/search?q=test&format=json" | head -c 200
-          echo ""
-
       - name: Discover companies with ICP Scout
         env:
           SEARXNG_URL: http://localhost:8080
@@ -60,82 +59,44 @@ jobs:
             --limit 50 \
             --output ../icp-companies.json
 
-      - name: Extract domains
+      - name: Debug ICP Scout JSON structure
         run: |
+          echo "=== First 2000 chars of icp-companies.json ==="
+          head -c 2000 icp-companies.json
+          echo ""
+          echo ""
+          echo "=== JSON structure ==="
           python3 << 'EOF'
           import json
-
           with open('icp-companies.json') as f:
               data = json.load(f)
-
-          companies = data if isinstance(data, list) else data.get('companies', data.get('results', []))
-          domains = [c.get('domain') for c in companies if c.get('domain')]
-
-          with open('domains.txt', 'w') as f:
-              for d in domains:
-                  f.write(d + '\n')
-
-          print(f"Found {len(domains)} domains")
-          for d in domains[:15]:
-              print(f"  {d}")
+          print('Type:', type(data).__name__)
+          if isinstance(data, list):
+              print('List length:', len(data))
+              if data:
+                  print('First item keys:', list(data[0].keys()))
+                  print('First item:')
+                  print(json.dumps(data[0], indent=2)[:800])
+          elif isinstance(data, dict):
+              print('Dict keys:', list(data.keys()))
+              for k in data.keys():
+                  v = data[k]
+                  if isinstance(v, list) and v:
+                      print(f'{k}[0] keys:', list(v[0].keys()) if isinstance(v[0], dict) else type(v[0]).__name__)
+                      print(f'{k}[0] sample:', json.dumps(v[0], indent=2)[:500] if isinstance(v[0], dict) else str(v[0])[:200])
           EOF
 
-      - name: Find SDRs with ColdReach
+      - name: Debug ColdReach CLI
         run: |
           pip install coldreach
-          python3 << 'EOF'
-          import json
-          import subprocess
-          import re
-
-          with open('domains.txt') as f:
-              domains = [line.strip() for line in f if line.strip()]
-
-          all_leads = []
-          for domain in domains:
-              print(f"Finding SDRs at: {domain}")
-              try:
-                  result = subprocess.run(
-                      ['coldreach', 'find', '--domain', domain, '--json'],
-                      capture_output=True,
-                      text=True,
-                      timeout=120
-                  )
-                  if result.returncode != 0:
-                      print(f"  ColdReach failed: {result.stderr[:200]}")
-                      continue
-
-                  emails_data = json.loads(result.stdout)
-                  for entry in emails_data.get('emails', []):
-                      title = entry.get('title', '').lower()
-                      if re.search(r'\b(sdr|bdr|sales development|business development)\b', title):
-                          all_leads.append({
-                              'email': entry['email'],
-                              'name': entry.get('name', ''),
-                              'title': title,
-                              'company': domain
-                          })
-              except Exception as e:
-                  print(f"  Error: {e}")
-
-          seen = set()
-          unique_leads = []
-          for lead in all_leads:
-              if lead['email'] not in seen:
-                  seen.add(lead['email'])
-                  unique_leads.append(lead)
-
-          with open('leads.json', 'w') as f:
-              json.dump([{'email': l['email']} for l in unique_leads], f, indent=2)
-
-          print(f"\nTotal SDR/BDR leads found: {len(unique_leads)}")
-          print(json.dumps(unique_leads[:10], indent=2))
-          EOF
-
-      - name: Commit results
-        run: |
-          git config user.name "github-actions"
-          git config user.email "actions@github.com"
-          git add domains.txt leads.json icp-companies.json
-          git diff --quiet && git diff --staged --quiet || git commit -m "Update prospects"
-          git push
+          echo "=== coldreach --help ==="
+          coldreach --help 2>&1 || echo "FAILED"
+          echo ""
+          echo "=== coldreach find --help ==="
+          coldreach find --help 2>&1 || echo "find subcommand does not exist"
+          echo ""
+          echo "=== coldreach --version ==="
+          coldreach --version 2>&1 || echo "no version"
+          echo ""
+          echo "=== All available subcommands ==="
+          coldreach --help 2>&1 | grep -A 50 "Commands:" || true
