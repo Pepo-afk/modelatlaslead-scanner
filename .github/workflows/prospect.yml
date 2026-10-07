@@ -1,10 +1,10 @@
-name: Discover Prospects
+name: Find Companies and SDRs
 
 on:
   workflow_dispatch:
 
 jobs:
-  discover:
+  find:
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -15,47 +15,57 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: Install tools
-        run: |
-          pip install opengtm
-          pip install coldreach
+      - name: Install ColdReach
+        run: pip install coldreach
 
-      - name: Stage 1 - Find Companies with OpenGTM
+      - name: Find companies with Hunter Discover
         env:
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          GEMINI_MODEL: gemma-4-26b-a4b-it
+          HUNTER_API_KEY: ${{ secrets.HUNTER_API_KEY }}
         run: |
-          opengtm pipeline \
-            --industry "B2B outbound agency" \
-            --region "United States" \
-            --limit 10 \
-            --icp-profile agency \
-            --output companies-raw.json \
-            --no-sync
+          curl -s -X POST "https://api.hunter.io/v2/discover" \
+            -H "Content-Type: application/json" \
+            -d "{
+              \"api_key\": \"$HUNTER_API_KEY\",
+              \"query\": \"B2B outbound agency\",
+              \"location\": \"United States\",
+              \"limit\": 50
+            }" > hunter-companies.json
 
-      - name: Stage 2 - Find SDRs with ColdReach
+          python << 'EOF'
+          import json
+
+          with open('hunter-companies.json') as f:
+              data = json.load(f)
+
+          if 'errors' in data:
+              print("Hunter API error:", data['errors'])
+              exit(1)
+
+          companies = data.get('data', {}).get('companies', [])
+          domains = [c.get('domain') for c in companies if c.get('domain')]
+
+          with open('domains.txt', 'w') as f:
+              for d in domains:
+                  f.write(d + '\n')
+
+          print(f"Found {len(domains)} company domains")
+          for d in domains[:15]:
+              print(f"  {d}")
+          EOF
+
+      - name: Find SDRs with ColdReach
         run: |
           python << 'EOF'
           import json
           import subprocess
           import re
-          
-          with open('companies-raw.json') as f:
-              data = json.load(f)
-          
-          companies = data.get('leads', data.get('results', []))
-          if isinstance(companies, dict):
-              companies = companies.get('leads', [])
-          
+
+          with open('domains.txt') as f:
+              domains = [line.strip() for line in f if line.strip()]
+
           all_leads = []
-          for company in companies:
-              domain = company.get('domain') or company.get('website') or ''
-              domain = domain.replace('https://', '').replace('http://', '').replace('www.', '').split('/')[0]
-              if not domain:
-                  continue
-              
+          for domain in domains:
               print(f"Finding SDRs at: {domain}")
-              
               try:
                   result = subprocess.run(
                       ['coldreach', 'find', '--domain', domain, '--json'],
@@ -66,38 +76,38 @@ jobs:
                   if result.returncode != 0:
                       print(f"  ColdReach failed: {result.stderr[:200]}")
                       continue
-                  
+
                   emails_data = json.loads(result.stdout)
-                  for email_entry in emails_data.get('emails', []):
-                      title = email_entry.get('title', '').lower()
+                  for entry in emails_data.get('emails', []):
+                      title = entry.get('title', '').lower()
                       if re.search(r'\b(sdr|bdr|sales development|business development)\b', title):
                           all_leads.append({
-                              'email': email_entry['email'],
-                              'name': email_entry.get('name', ''),
+                              'email': entry['email'],
+                              'name': entry.get('name', ''),
                               'title': title,
-                              'company': company.get('company_name', '')
+                              'company': domain
                           })
               except Exception as e:
-                  print(f"  Error processing {domain}: {e}")
-          
+                  print(f"  Error: {e}")
+
           seen = set()
           unique_leads = []
           for lead in all_leads:
               if lead['email'] not in seen:
                   seen.add(lead['email'])
                   unique_leads.append(lead)
-          
+
           with open('leads.json', 'w') as f:
               json.dump([{'email': l['email']} for l in unique_leads], f, indent=2)
-          
-          print(f"Found {len(unique_leads)} SDR/BDR leads")
-          print(json.dumps(unique_leads[:5], indent=2))
+
+          print(f"\nTotal SDR/BDR leads found: {len(unique_leads)}")
+          print(json.dumps(unique_leads[:10], indent=2))
           EOF
 
-      - name: Commit leads.json
+      - name: Commit results
         run: |
           git config user.name "github-actions"
           git config user.email "actions@github.com"
-          git add leads.json companies-raw.json
-          git diff --quiet && git diff --staged --quiet || git commit -m "Update leads.json with SDRs"
+          git add domains.txt leads.json
+          git diff --quiet && git diff --staged --quiet || git commit -m "Update domains and leads"
           git push
