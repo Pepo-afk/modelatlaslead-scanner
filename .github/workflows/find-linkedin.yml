@@ -1,0 +1,71 @@
+name: Find LinkedIn SDRs
+
+on:
+  workflow_dispatch:
+
+jobs:
+  find:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Find LinkedIn Profiles with Bright Data
+        env:
+          BRIGHT_DATA_API_KEY: ${{ secrets.BRIGHT_DATA_API_KEY }}
+          BRIGHT_DATA_ZONE: ${{ secrets.BRIGHT_DATA_ZONE }}
+        run: |
+          COMPANIES=("belkins.io" "builtforb2b.com" "punchb2b.com" "qualitycontactsolutions.com" "memoryblue.com" "marketjoy.com")
+          TITLES=("SDR" "BDR" "Sales Development Representative" "Business Development Representative")
+
+          > linkedin-profiles.json
+
+          for COMPANY in "${COMPANIES[@]}"; do
+            for TITLE in "${TITLES[@]}"; do
+              echo "Searching: $TITLE at $COMPANY"
+              QUERY="site:linkedin.com/in \"$TITLE\" \"$COMPANY\""
+              ENCODED_QUERY=$(echo "$QUERY" | jq -sRr @uri)
+
+              curl -s -X POST "https://api.brightdata.com/request" \
+                -H "Content-Type: application/json" \
+                -H "Authorization: Bearer $BRIGHT_DATA_API_KEY" \
+                -d "{
+                  \"zone\": \"$BRIGHT_DATA_ZONE\",
+                  \"url\": \"https://www.google.com/search?q=$ENCODED_QUERY\",
+                  \"format\": \"json\",
+                  \"data_format\": \"json\"
+                }" > result.json
+
+              python3 -c "
+import json, re
+try:
+    data = json.load(open('result.json'))
+    for item in data.get('organic', []):
+        url = item.get('link', '')
+        title = item.get('title', '')
+        snippet = item.get('snippet', '')
+        name_match = re.match(r'^([^-]+)', title)
+        if name_match and 'linkedin.com/in/' in url:
+            name = name_match.group(1).strip()
+            print(json.dumps({'name': name, 'url': url, 'snippet': snippet, 'company': '$COMPANY'}))
+except Exception as e:
+    pass
+" >> linkedin-profiles.json
+            done
+          done
+
+          echo "Found $(wc -l < linkedin-profiles.json) profiles."
+          head -20 linkedin-profiles.json
+
+      - name: Commit profiles
+        run: |
+          git config user.name "github-actions"
+          git config user.email "actions@github.com"
+          git add linkedin-profiles.json
+          git diff --quiet && git diff --staged --quiet || git commit -m "Update LinkedIn profiles"
+          git push
