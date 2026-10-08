@@ -15,17 +15,13 @@ jobs:
         with:
           python-version: '3.11'
 
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '20'
-
       - name: Find LinkedIn Profiles
         env:
           BRIGHT_DATA_API_KEY: ${{ secrets.BRIGHT_DATA_API_KEY }}
           BRIGHT_DATA_ZONE: ${{ secrets.BRIGHT_DATA_ZONE }}
         run: python find_linkedin.py
 
-      - name: Find Emails with Prospector
+      - name: Verify Emails via Free API
         run: python find_emails.py
 
       - name: Commit results
