@@ -8,100 +8,103 @@ import urllib.parse
 API_KEY = os.environ['BRIGHT_DATA_API_KEY']
 ZONE = os.environ['BRIGHT_DATA_ZONE']
 
-COMPANIES = [
-    "belkins.io",
-    "builtforb2b.com",
-    "punchb2b.com",
-    "qualitycontactsolutions.com",
-    "memoryblue.com",
-    "marketjoy.com",
-    "saleshive.com",
-    "konsyg.com",
-]
-
-TITLES = [
-    "SDR",
-    "BDR",
-    "Sales Development Representative",
-    "Business Development Representative",
+# No fixed company list. Broad ICP-targeted queries.
+QUERIES = [
+    'site:linkedin.com/in "SDR" "B2B" "outbound" -recruiter -"looking for"',
+    'site:linkedin.com/in "Sales Development Representative" "agency" -recruiter',
+    'site:linkedin.com/in "BDR" "B2B" "cold email" -recruiter',
+    'site:linkedin.com/in "Business Development Representative" "outbound agency"',
+    'site:linkedin.com/in "SDR" "cold email" "appointment setting"',
+    'site:linkedin.com/in "Sales Development Representative" "10-50 employees"',
+    'site:linkedin.com/in "SDR" "lead generation" "remote"',
+    'site:linkedin.com/in "BDR" "outbound" "SaaS" -recruiter',
 ]
 
 profiles = []
 seen_urls = set()
 
-for company in COMPANIES:
-    for title in TITLES:
-        query = f'site:linkedin.com/in "{title}" "{company}"'
-        encoded = urllib.parse.quote(query)
-        google_url = f"https://www.google.com/search?q={encoded}&brd_json=1&gl=us&hl=en"
+for query in QUERIES:
+    encoded = urllib.parse.quote(query)
+    google_url = f"https://www.google.com/search?q={encoded}&brd_json=1&gl=us&hl=en"
 
-        payload = json.dumps({
-            "zone": ZONE,
-            "url": google_url,
-            "format": "raw"
-        }).encode('utf-8')
+    payload = json.dumps({
+        "zone": ZONE,
+        "url": google_url,
+        "format": "raw"
+    }).encode('utf-8')
 
-        req = urllib.request.Request(
-            "https://api.brightdata.com/request",
-            data=payload,
-            headers={
-                "Content-Type": "application/json",
-                "Authorization": f"Bearer {API_KEY}"
-            },
-            method="POST"
-        )
+    req = urllib.request.Request(
+        "https://api.brightdata.com/request",
+        data=payload,
+        headers={
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {API_KEY}"
+        },
+        method="POST"
+    )
 
-        try:
-            with urllib.request.urlopen(req, timeout=90) as resp:
-                raw = resp.read().decode('utf-8')
-        except Exception as e:
-            print(f"  HTTP error for {title} at {company}: {e}")
+    try:
+        with urllib.request.urlopen(req, timeout=90) as resp:
+            raw = resp.read().decode('utf-8')
+    except Exception as e:
+        print(f"  HTTP error: {e}")
+        continue
+
+    try:
+        data = json.loads(raw)
+    except Exception:
+        print(f"  Non-JSON response")
+        continue
+
+    results = data if isinstance(data, list) else data.get('organic', [])
+    print(f"  Query returned {len(results)} results")
+
+    for item in results:
+        if not isinstance(item, dict):
             continue
+        link = item.get('link', '') or item.get('url', '')
+        item_title = item.get('title', '')
+        snippet = item.get('snippet', '') or item.get('description', '')
 
-        # Bright Data may return JSON directly or wrapped
-        try:
-            data = json.loads(raw)
-        except Exception:
-            print(f"  Non-JSON response for {title} at {company}: {raw[:200]}")
+        if 'linkedin.com/in/' not in link:
             continue
+        if link in seen_urls:
+            continue
+        seen_urls.add(link)
 
-        # Handle both possible shapes
-        if isinstance(data, list):
-            results = data
-        else:
-            results = data.get('organic', [])
+        # Clean name extraction (no titles, no emojis)
+        name_part = item_title
+        for sep in [' – ', ' - ', ' | ', ' at ', ' @ ', ' — ']:
+            if sep in name_part:
+                name_part = name_part.split(sep)[0]
+        name_part = re.sub(r'[^\w\s\'.\-]', '', name_part).strip()
+        name_part = re.sub(r',\s*[A-Z]{2,}$', '', name_part).strip()
+        name = name_part
 
-        print(f"  {title} at {company}: {len(results)} results")
+        # Extract company domain from snippet
+        company_domain = None
+        domain_match = re.search(r'at\s+([A-Z][\w&]+(?:\s+[A-Z][\w&]+)*)', snippet)
+        company_name = domain_match.group(1).strip() if domain_match else None
 
-        for item in results:
-            if not isinstance(item, dict):
-                continue
-            link = item.get('link', '') or item.get('url', '')
-            item_title = item.get('title', '')
-            snippet = item.get('snippet', '') or item.get('description', '')
+        # Also try to find explicit domains
+        domain_match2 = re.search(r'\b([\w-]+\.(?:com|io|ai|co|net))\b', snippet)
+        if domain_match2 and 'linkedin' not in domain_match2.group(1):
+            company_domain = domain_match2.group(1)
 
-            if 'linkedin.com/in/' not in link:
-                continue
-            if link in seen_urls:
-                continue
-            seen_urls.add(link)
+        if name and len(name.split()) >= 2:
+            profiles.append({
+                'name': name,
+                'url': link,
+                'snippet': snippet,
+                'company_name': company_name,
+                'company_domain': company_domain,
+            })
 
-            name_match = re.match(r'^([^-|]+)', item_title)
-            name = name_match.group(1).strip() if name_match else ''
-
-            if name:
-                profiles.append({
-                    'name': name,
-                    'url': link,
-                    'snippet': snippet,
-                    'company': company
-                })
-
-        time.sleep(2)
+    time.sleep(2)
 
 with open('linkedin-profiles.json', 'w') as f:
     json.dump(profiles, f, indent=2)
 
-print(f"\nTotal profiles found: {len(profiles)}")
-for p in profiles[:30]:
-    print(f"  {p['name']:30s} | {p['company']:30s} | {p['url']}") 
+print(f"\nTotal profiles: {len(profiles)}")
+for p in profiles[:20]:
+    print(f"  {p['name']:35s} | {p.get('company_domain') or p.get('company_name') or 'unknown'}")
