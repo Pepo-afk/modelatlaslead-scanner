@@ -1,4 +1,4 @@
-name: Find SDR Leads
+name: Find SDR Leads Linkedin
 
 on:
   workflow_dispatch:
