@@ -15,16 +15,23 @@ jobs:
         with:
           python-version: '3.11'
 
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
       - name: Find LinkedIn Profiles
         env:
           BRIGHT_DATA_API_KEY: ${{ secrets.BRIGHT_DATA_API_KEY }}
           BRIGHT_DATA_ZONE: ${{ secrets.BRIGHT_DATA_ZONE }}
         run: python find_linkedin.py
 
-      - name: Commit profiles
+      - name: Find Emails with Prospector
+        run: python find_emails.py
+
+      - name: Commit results
         run: |
           git config user.name "github-actions"
           git config user.email "actions@github.com"
-          git add linkedin-profiles.json
-          git diff --quiet && git diff --staged --quiet || git commit -m "Update LinkedIn profiles"
+          git add linkedin-profiles.json leads.json
+          git diff --quiet && git diff --staged --quiet || git commit -m "Update LinkedIn profiles and leads"
           git push
