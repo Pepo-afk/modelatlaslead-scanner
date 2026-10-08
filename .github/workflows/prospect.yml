@@ -1,10 +1,10 @@
-name: Find SDR Leads with LinkedIn
+name: Find SDR Leads
 
 on:
   workflow_dispatch:
 
 jobs:
-  find-leads:
+  find:
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -19,127 +19,171 @@ jobs:
         with:
           python-version: '3.11'
 
-      # ---------- STAGE 1: FIND LINKEDIN PROFILES ----------
-      - name: Find LinkedIn Profiles with Bright Data
+      - name: Clone ICP Scout
+        run: git clone https://github.com/GrimmReaper0/icp-scout.git
+
+      - name: Create SearXNG settings
+        run: |
+          mkdir -p searxng-config
+          cat > searxng-config/settings.yml << 'EOF'
+          use_default_settings: true
+
+          server:
+            limiter: false
+            image_proxy: false
+            secret_key: "github-actions-secret-key"
+
+          search:
+            formats:
+              - html
+              - json
+          EOF
+
+      - name: Start SearXNG
+        run: |
+          docker run -d --name searxng -p 8080:8080 \
+            -v $(pwd)/searxng-config/settings.yml:/etc/searxng/settings.yml:ro \
+            -e SEARXNG_BASE_URL=http://localhost:8080 \
+            -e SEARXNG_SETTINGS_PATH=/etc/searxng/settings.yml \
+            searxng/searxng
+          sleep 20
+
+      - name: Discover companies with ICP Scout
         env:
-          BRIGHT_DATA_API_KEY: ${{ secrets.BRIGHT_DATA_API_KEY }}
-          BRIGHT_DATA_ZONE: ${{ secrets.BRIGHT_DATA_ZONE }}
+          SEARXNG_URL: http://localhost:8080
         run: |
-          COMPANIES=("belkins.io" "builtforb2b.com" "punchb2b.com" "qualitycontactsolutions.com")
-          TITLES=("SDR" "BDR" "Sales Development Representative" "Business Development Representative")
+          cd icp-scout
+          node src/cli.mjs discover \
+            "B2B outbound sales agency in United States" \
+            --exclude directory,marketplace,review \
+            --limit 50 \
+            --output ../icp-companies.json
+          cd ..
 
-          > linkedin-profiles.json
-
-          for COMPANY in "${COMPANIES[@]}"; do
-            for TITLE in "${TITLES[@]}"; do
-              echo "Searching for $TITLE at $COMPANY..."
-              QUERY="site:linkedin.com/in \"$TITLE\" \"$COMPANY\""
-              ENCODED_QUERY=$(echo "$QUERY" | jq -sRr @uri)
-
-              curl -s -X POST "https://api.brightdata.com/request" \
-                -H "Content-Type: application/json" \
-                -H "Authorization: Bearer $BRIGHT_DATA_API_KEY" \
-                -d "{
-                  \"zone\": \"$BRIGHT_DATA_ZONE\",
-                  \"url\": \"https://www.google.com/search?q=$ENCODED_QUERY\",
-                  \"format\": \"json\",
-                  \"data_format\": \"json\"
-                }" > result.json
-
-              python3 -c "
-import json, re, sys
-try:
-    data = json.load(open('result.json'))
-    for item in data.get('organic', []):
-        url = item.get('link', '')
-        title = item.get('title', '')
-        snippet = item.get('snippet', '')
-        name_match = re.match(r'^([^-]+)', title)
-        if name_match and 'linkedin.com/in/' in url:
-            name = name_match.group(1).strip()
-            print(json.dumps({'name': name, 'url': url, 'snippet': snippet, 'company': '$COMPANY'}))
-except Exception as e:
-    pass
-" >> linkedin-profiles.json
-            done
-          done
-
-          echo "Found $(wc -l < linkedin-profiles.json) profiles."
-
-      # ---------- STAGE 2: FIND EMAILS WITH PROSPECTOR MCP ----------
-      - name: Install Prospector MCP
-        run: npm install -g prospector-mcp
-
-      - name: Start Prospector MCP Server
-        run: |
-          prospector-mcp --port 3100 &
-          echo "PROSPECTOR_PID=$!" >> $GITHUB_ENV
-          sleep 8
-
-      - name: Find Emails with Prospector
+      - name: Extract domains
         run: |
           python3 << 'EOF'
-import json, subprocess, time, os, re
-import requests
+          import json
 
-# Read discovered profiles
-profiles = [json.loads(line) for line in open('linkedin-profiles.json') if line.strip()]
+          with open('icp-companies.json') as f:
+              data = json.load(f)
 
-leads = []
-for p in profiles:
-    name = p['name']
-    company_domain = p.get('company', '')
+          leads = data.get('leads', [])
+          print(f"Total leads: {len(leads)}")
 
-    # Extract domain from the company field (fallback to snippet)
-    if not company_domain:
-        for word in p.get('snippet', '').split():
-            if '.' in word and not word.startswith('linkedin'):
-                potential_domain = word.strip('.,;:()[]{}')
-                if potential_domain.endswith(('.com', '.io', '.ai')):
-                    company_domain = potential_domain
-                    break
+          domains = []
+          for l in leads:
+              d = l.get('domain')
+              s = l.get('score', 0)
+              if d and s >= 50:
+                  domains.append(d)
+                  print(f"  {d} (score {s})")
 
-    if not company_domain:
-        continue
+          with open('domains.txt', 'w') as f:
+              for d in domains:
+                  f.write(d + '\n')
 
-    # Call Prospector MCP via HTTP (assuming it exposes an HTTP endpoint)
-    # NOTE: The exact endpoint may differ. Check the prospector-mcp docs.
-    try:
-        response = requests.post('http://localhost:3100/mcp', json={
-            'tool': 'find_emails',
-            'params': {'name': name, 'domain': company_domain}
-        }, timeout=30)
-        if response.status_code == 200:
-            email_data = response.json()
-            if email_data.get('email'):
-                leads.append({
-                    'name': name,
-                    'email': email_data['email'],
-                    'domain': company_domain,
-                    'linkedin': p['url']
-                })
-                print(f"  Found: {name} -> {email_data['email']}")
-    except Exception as e:
-        print(f"  Error for {name}: {e}")
+          print(f"\nWrote {len(domains)} domains")
+          EOF
 
-# Write leads to leads.json
-with open('leads.json', 'w') as f:
-    json.dump([{'email': l['email']} for l in leads], f, indent=2)
+      - name: Install ColdReach
+        run: pip install coldreach
 
-print(f"\nTotal verified emails: {len(leads)}")
-for l in leads[:20]:
-    print(f"  {l['name']:25s} | {l['email']:35s} | {l['domain']}")
-EOF
+      - name: Find emails with ColdReach
+        run: |
+          python3 << 'EOF'
+          import json
+          import subprocess
+          import os
 
-      - name: Stop Prospector MCP Server
-        if: always()
-        run: kill ${{ env.PROSPECTOR_PID }} || true
+          with open('domains.txt') as f:
+              domains = [line.strip() for line in f if line.strip()]
 
-      # ---------- COMMIT RESULTS ----------
-      - name: Commit leads
+          print(f"Processing {len(domains)} domains")
+
+          all_emails = []
+          for domain in domains:
+              print(f"\n=== {domain} ===")
+              try:
+                  result = subprocess.run(
+                      ['coldreach', 'find', '--domain', domain, '--json', '--quick'],
+                      capture_output=True,
+                      text=True,
+                      timeout=60
+                  )
+                  if result.returncode != 0:
+                      print(f"  Failed: {result.stderr[:200]}")
+                      continue
+
+                  data = json.loads(result.stdout)
+                  emails = data.get('emails', data.get('results', []))
+                  for e in emails:
+                      if isinstance(e, dict):
+                          addr = e.get('email') or e.get('address')
+                          if addr:
+                              all_emails.append({'email': addr, 'domain': domain})
+                              print(f"  {addr}")
+                      elif isinstance(e, str):
+                          all_emails.append({'email': e, 'domain': domain})
+                          print(f"  {e}")
+
+              except subprocess.TimeoutExpired:
+                  print(f"  Timeout")
+              except Exception as e:
+                  print(f"  Error: {e}")
+
+          with open('emails-full.json', 'w') as f:
+              json.dump(all_emails, f, indent=2)
+
+          print(f"\nTotal emails: {len(all_emails)}")
+          EOF
+
+      - name: Filter role inboxes
+        run: |
+          python3 << 'EOF'
+          import json
+
+          with open('emails-full.json') as f:
+              emails = json.load(f)
+
+          ROLE_LOCALS = {
+              'sales', 'info', 'press', 'support', 'hr', 'recruiting', 'jobs',
+              'careers', 'hello', 'contact', 'team', 'billing', 'accounts',
+              'marketing', 'media', 'pr', 'legal', 'admin', 'office', 'help',
+              'enquiries', 'inquiries', 'enquiry', 'reception', 'general',
+              'noreply', 'no-reply', 'postmaster', 'webmaster', 'abuse',
+              'newsletter', 'feedback', 'security', 'it', 'dev', 'engineering'
+          }
+
+          personal = []
+          seen = set()
+          for entry in emails:
+              email = entry['email']
+              local = email.split('@')[0].lower()
+              if local in ROLE_LOCALS:
+                  continue
+              if local.startswith(('noreply', 'no-reply', 'donotreply')):
+                  continue
+              if email in seen:
+                  continue
+              seen.add(email)
+              personal.append(entry)
+
+          with open('leads.json', 'w') as f:
+              json.dump([{'email': e['email']} for e in personal], f, indent=2)
+
+          with open('personal-emails.json', 'w') as f:
+              json.dump(personal, f, indent=2)
+
+          print(f"Personal emails: {len(personal)}")
+          for e in personal:
+              print(f"  {e['email']}")
+          EOF
+
+      - name: Commit results
         run: |
           git config user.name "github-actions"
           git config user.email "actions@github.com"
-          git add leads.json linkedin-profiles.json
-          git diff --quiet && git diff --staged --quiet || git commit -m "Update leads from LinkedIn"
+          git add -f domains.txt icp-companies.json emails-full.json leads.json personal-emails.json
+          git diff --quiet && git diff --staged --quiet || git commit -m "Update leads"
           git push
