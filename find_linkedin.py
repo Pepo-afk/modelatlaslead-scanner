@@ -1,6 +1,7 @@
 import json
 import os
 import re
+import time
 import urllib.request
 import urllib.parse
 
@@ -14,6 +15,8 @@ COMPANIES = [
     "qualitycontactsolutions.com",
     "memoryblue.com",
     "marketjoy.com",
+    "saleshive.com",
+    "konsyg.com",
 ]
 
 TITLES = [
@@ -30,13 +33,12 @@ for company in COMPANIES:
     for title in TITLES:
         query = f'site:linkedin.com/in "{title}" "{company}"'
         encoded = urllib.parse.quote(query)
-        url = f"https://www.google.com/search?q={encoded}"
+        google_url = f"https://www.google.com/search?q={encoded}&brd_json=1&gl=us&hl=en"
 
         payload = json.dumps({
             "zone": ZONE,
-            "url": url,
-            "format": "json",
-            "data_format": "json"
+            "url": google_url,
+            "format": "raw"
         }).encode('utf-8')
 
         req = urllib.request.Request(
@@ -50,19 +52,33 @@ for company in COMPANIES:
         )
 
         try:
-            with urllib.request.urlopen(req, timeout=60) as resp:
-                data = json.loads(resp.read().decode('utf-8'))
+            with urllib.request.urlopen(req, timeout=90) as resp:
+                raw = resp.read().decode('utf-8')
         except Exception as e:
-            print(f"  Failed for {title} at {company}: {e}")
+            print(f"  HTTP error for {title} at {company}: {e}")
             continue
 
-        results = data.get('organic', [])
+        # Bright Data may return JSON directly or wrapped
+        try:
+            data = json.loads(raw)
+        except Exception:
+            print(f"  Non-JSON response for {title} at {company}: {raw[:200]}")
+            continue
+
+        # Handle both possible shapes
+        if isinstance(data, list):
+            results = data
+        else:
+            results = data.get('organic', [])
+
         print(f"  {title} at {company}: {len(results)} results")
 
         for item in results:
-            link = item.get('link', '')
+            if not isinstance(item, dict):
+                continue
+            link = item.get('link', '') or item.get('url', '')
             item_title = item.get('title', '')
-            snippet = item.get('snippet', '')
+            snippet = item.get('snippet', '') or item.get('description', '')
 
             if 'linkedin.com/in/' not in link:
                 continue
@@ -81,9 +97,11 @@ for company in COMPANIES:
                     'company': company
                 })
 
+        time.sleep(2)
+
 with open('linkedin-profiles.json', 'w') as f:
     json.dump(profiles, f, indent=2)
 
 print(f"\nTotal profiles found: {len(profiles)}")
-for p in profiles[:20]:
-    print(f"  {p['name']:30s} | {p['company']}")
+for p in profiles[:30]:
+    print(f"  {p['name']:30s} | {p['company']:30s} | {p['url']}") 
