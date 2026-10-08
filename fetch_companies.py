@@ -25,10 +25,10 @@ AND normalized_domain IS NOT NULL
 LIMIT 150
 """
 
-payload = json.dumps({"sql": query}).encode('utf-8')
+payload = json.dumps({"payload": {"sql": query}}).encode('utf-8')
 
 req = urllib.request.Request(
-    "https://code.deepline.com/api/v2/tools/execute",
+    "https://code.deepline.com/api/v2/integrations/free_simple_company_search/execute",
     data=payload,
     headers={
         "Content-Type": "application/json",
@@ -39,31 +39,43 @@ req = urllib.request.Request(
 
 try:
     with urllib.request.urlopen(req, timeout=120) as resp:
-        data = json.loads(resp.read().decode('utf-8'))
+        raw = resp.read().decode('utf-8')
+except urllib.error.HTTPError as e:
+    print(f"HTTP {e.code}: {e.reason}")
+    print(e.read().decode('utf-8')[:1000])
+    exit(1)
 except Exception as e:
-    print(f"HTTP error: {e}")
+    print(f"Error: {e}")
     exit(1)
 
-print("Response top-level keys:", list(data.keys()) if isinstance(data, dict) else type(data).__name__)
+print("=== Raw response (first 1500 chars) ===")
+print(raw[:1500])
+print()
 
+data = json.loads(raw)
+
+# Find the rows array - try every possible shape
 rows = []
-if isinstance(data, dict):
-    for key in ['data', 'rows', 'result', 'results']:
-        if key in data and isinstance(data[key], list):
-            rows = data[key]
-            break
-    if not rows and 'data' in data and isinstance(data['data'], dict):
-        for key in ['data', 'rows', 'result']:
-            if key in data['data'] and isinstance(data['data'][key], list):
-                rows = data['data'][key]
-                break
 
-if not rows and isinstance(data, list):
-    rows = data
+def find_rows(obj, depth=0):
+    if depth > 4:
+        return None
+    if isinstance(obj, list) and obj and isinstance(obj[0], dict):
+        return obj
+    if isinstance(obj, dict):
+        for key in ['data', 'rows', 'result', 'results', 'records']:
+            if key in obj:
+                found = find_rows(obj[key], depth + 1)
+                if found:
+                    return found
+    return None
 
-print(f"Rows returned: {len(rows)}")
+rows = find_rows(data) or []
+
+print(f"Rows parsed: {len(rows)}")
 if rows:
-    print("First row keys:", list(rows[0].keys()))
+    print(f"First row keys: {list(rows[0].keys())}")
+    print(f"First row: {json.dumps(rows[0], indent=2)[:500]}")
 
 domains = []
 for row in rows:
@@ -72,7 +84,6 @@ for row in rows:
         if d and '.' in d:
             domains.append(d)
 
-# Dedupe
 seen = set()
 final = []
 for d in domains:
@@ -84,6 +95,6 @@ with open('domains.txt', 'w') as f:
     for d in final:
         f.write(d + '\n')
 
-print(f"\nWrote {len(final)} unique domains")
+print(f"\nWrote {len(final)} unique domains to domains.txt")
 for d in final[:20]:
     print(f"  {d}")
