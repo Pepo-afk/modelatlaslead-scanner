@@ -1,4 +1,4 @@
-name: Find LinkedIn SDRs
+name: Find SDR Leads
 
 on:
   workflow_dispatch:
@@ -15,19 +15,24 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: Find LinkedIn Profiles
+      - name: Fetch fresh companies from Deepline
+        env:
+          DEEPLINE_API_KEY: ${{ secrets.DEEPLINE_API_KEY }}
+        run: python fetch_companies.py
+
+      - name: Find LinkedIn profiles with Bright Data
         env:
           BRIGHT_DATA_API_KEY: ${{ secrets.BRIGHT_DATA_API_KEY }}
           BRIGHT_DATA_ZONE: ${{ secrets.BRIGHT_DATA_ZONE }}
         run: python find_linkedin.py
 
-      - name: Verify Emails via Free API
+      - name: Verify emails
         run: python find_emails.py
 
       - name: Commit results
         run: |
           git config user.name "github-actions"
           git config user.email "actions@github.com"
-          git add linkedin-profiles.json leads.json
-          git diff --quiet && git diff --staged --quiet || git commit -m "Update LinkedIn profiles and leads"
+          git add domains.txt linkedin-profiles.json leads.json
+          git diff --quiet && git diff --staged --quiet || git commit -m "Update leads"
           git push
