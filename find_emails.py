@@ -1,7 +1,33 @@
 import json
-import subprocess
+import re
 import time
-import sys
+import urllib.request
+import urllib.parse
+
+VERIFY_URL = "https://rapid-email-verifier.fly.dev/api/validate"
+
+# Common patterns. Keep it small to save verification budget.
+def generate_permutations(first, last, domain):
+    f = first.lower()
+    l = last.lower()
+    return [
+        f"{f}.{l}@{domain}",
+        f"{f}@{domain}",
+        f"{f}{l}@{domain}",
+        f"{f[0]}.{l}@{domain}",
+        f"{f}.{l[0]}@{domain}",
+        f"{f}_{l}@{domain}",
+    ]
+
+def verify_email(email):
+    try:
+        url = f"{VERIFY_URL}?email={urllib.parse.quote(email)}"
+        req = urllib.request.Request(url, headers={'User-Agent': 'ModelAtlas/1.0'})
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            data = json.loads(resp.read().decode('utf-8'))
+        return data
+    except Exception as e:
+        return {'error': str(e)}
 
 with open('linkedin-profiles.json') as f:
     profiles = json.load(f)
@@ -9,64 +35,64 @@ with open('linkedin-profiles.json') as f:
 print(f"Processing {len(profiles)} profiles")
 
 leads = []
+seen_emails = set()
+verified_count = 0
+MAX_VERIFICATIONS = 900  # Stay under free tier
+
 for p in profiles:
-    name = p['name']
-    domain = p['company']
+    if verified_count >= MAX_VERIFICATIONS:
+        print(f"  Reached verification limit")
+        break
+
+    name = p.get('name', '').strip()
+    domain = p.get('company_domain')
 
     if not name or not domain:
         continue
 
-    # Call Prospector MCP via CLI
-    # Prospector exposes find_emails as an MCP tool
-    cmd = [
-        'npx', '-y', 'prospector-mcp',
-        'find_emails',
-        '--domain', domain,
-        '--contact_name', name
-    ]
+    parts = name.split()
+    if len(parts) < 2:
+        continue
+    first = parts[0]
+    last = parts[-1]
 
-    try:
-        result = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            timeout=60
-        )
+    # Skip obviously wrong names
+    if len(first) < 2 or len(last) < 2:
+        continue
+    if any(c.isdigit() for c in first + last):
+        continue
 
-        output = result.stdout.strip()
-        if not output:
-            print(f"  Empty output for {name}")
+    found = False
+    for candidate in generate_permutations(first, last, domain):
+        if verified_count >= MAX_VERIFICATIONS:
+            break
+        if found:
+            break
+        if candidate in seen_emails:
             continue
+        seen_emails.add(candidate)
+        verified_count += 1
 
-        # Prospector may return JSON or plain text
-        try:
-            data = json.loads(output)
-            email = data.get('best_email') or data.get('email')
-        except json.JSONDecodeError:
-            # Try to extract email from plain text
-            import re
-            match = re.search(r'[\w\.-]+@[\w\.-]+\.\w+', output)
-            email = match.group(0) if match else None
+        result = verify_email(candidate)
+        is_valid = result.get('valid') or result.get('is_valid') or result.get('smtp', {}).get('valid')
 
-        if email:
+        if is_valid:
             leads.append({
                 'name': name,
-                'email': email,
+                'email': candidate,
                 'domain': domain,
-                'linkedin': p['url']
+                'linkedin': p['url'],
             })
-            print(f"  Found: {name} -> {email}")
+            print(f"  ✓ {name} -> {candidate}")
+            found = True
+            break
 
-    except subprocess.TimeoutExpired:
-        print(f"  Timeout for {name}")
-    except Exception as e:
-        print(f"  Error for {name}: {e}")
-
-    time.sleep(1)
+        time.sleep(0.2)
 
 with open('leads.json', 'w') as f:
     json.dump([{'email': l['email']} for l in leads], f, indent=2)
 
 print(f"\nTotal verified emails: {len(leads)}")
+print(f"Total verification calls used: {verified_count}")
 for l in leads:
-    print(f"  {l['name']:25s} | {l['email']:35s} | {l['domain']}")
+    print(f"  {l['name']:30s} | {l['email']}")
