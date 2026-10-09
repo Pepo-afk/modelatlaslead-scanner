@@ -130,8 +130,9 @@ function extractJsonObject(text) {
 
 async function callOpenRouter(prompt, retries = 3) {
   for (let attempt = 1; attempt <= retries; attempt++) {
+    let response;
     try {
-      const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+      response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
         method: 'POST',
         headers: {
           'Authorization': `Bearer ${OPENROUTER_API_KEY}`,
@@ -144,49 +145,72 @@ async function callOpenRouter(prompt, retries = 3) {
           response_format: { type: 'json_object' }
         })
       });
-
-      if (response.status === 429) {
-        await new Promise(r => setTimeout(r, 15000 * attempt));
-        continue;
-      }
-
-      if (!response.ok) {
-        const errText = await response.text();
-        console.error(`  HTTP ${response.status}:`, errText.slice(0, 200));
-        if (attempt < retries) { await new Promise(r => setTimeout(r, 5000)); continue; }
-        throw new Error(`OpenRouter ${response.status}`);
-      }
-
-      const data = await response.json();
-      const message = data?.choices?.[0]?.message;
-      let content = message?.content;
-
-      // 1. Try content first
-      if (content) {
-        try {
-          return extractJsonObject(content);
-        } catch (e) {
-          console.warn('  content not valid JSON, trying reasoning...');
-        }
-      }
-
-      // 2. Fallback: check reasoning field
-      if (message?.reasoning) {
-        try {
-          const parsed = extractJsonObject(message.reasoning);
-          console.log('  Recovered from reasoning field');
-          return parsed;
-        } catch (e) {
-          // reasoning was thinking text, not JSON
-        }
-      }
-
-      throw new Error('no content or usable reasoning');
     } catch (err) {
       if (attempt === retries) throw err;
-      console.warn(`  Retrying (${err.message})...`);
       await new Promise(r => setTimeout(r, 5000));
+      continue;
     }
+
+    if (response.status === 429) {
+      await new Promise(r => setTimeout(r, 15000 * attempt));
+      continue;
+    }
+
+    if (!response.ok) {
+      const errText = await response.text();
+      console.error(`  HTTP ${response.status}:`, errText.slice(0, 150));
+      if (attempt < retries) { await new Promise(r => setTimeout(r, 5000)); continue; }
+      throw new Error(`OpenRouter ${response.status}`);
+    }
+
+    const data = await response.json();
+    const choice = data?.choices?.[0];
+    const message = choice?.message;
+    const finishReason = choice?.finish_reason;
+    const content = message?.content;
+
+    // Non-retryable: content filter or provider error
+    if (finishReason === 'content_filter') {
+      console.warn('  Skipping (content_filter)');
+      return {};
+    }
+    if (choice?.error) {
+      console.warn(`  Skipping (provider error: ${choice.error.code || 'unknown'})`);
+      return {};
+    }
+
+    // Try content first
+    if (content) {
+      try {
+        return extractJsonObject(content);
+      } catch (e) {
+        // Content exists but is not JSON. If it is short and contains no braces, it is a refusal. Skip.
+        if (content.length < 80 && !content.includes('{')) {
+          console.warn(`  Skipping (non-JSON content: "${content.slice(0, 40)}")`);
+          return {};
+        }
+        // Otherwise, fall through to reasoning fallback
+      }
+    }
+
+    // Fallback: check reasoning field for valid JSON
+    if (message?.reasoning) {
+      try {
+        const parsed = extractJsonObject(message.reasoning);
+        console.log('  Recovered from reasoning field');
+        return parsed;
+      } catch (e) {
+        // reasoning was just thinking text, not JSON
+      }
+    }
+
+    // No usable content. Retry.
+    if (attempt < retries) {
+      console.warn('  Retrying (no usable content)');
+      await new Promise(r => setTimeout(r, 3000));
+      continue;
+    }
+    throw new Error('no usable content after retries');
   }
   throw new Error('All retries exhausted');
 }
@@ -223,7 +247,7 @@ async function batchDetectSignals(items) {
     const chunk = items.slice(i, i + CHUNK_SIZE);
     const chunkNum = Math.floor(i / CHUNK_SIZE) + 1;
     const totalChunks = Math.ceil(items.length / CHUNK_SIZE);
-    console.log(`  Chunk ${chunkNum}/${totalChunks} (${chunk.length} items)`);
+    console.log(`  Chunk ${chunkNum}/${totalChunks}`);
     try {
       const chunkResult = await callOpenRouter(buildBatchPrompt(chunk));
       Object.assign(combinedResult, chunkResult);
@@ -263,9 +287,7 @@ async function generateSignals() {
     for (const page of changedPages) {
       if (page.page_type === 'careers') {
         const hasHiringSurge = await checkHiringSurge(page.id);
-        itemMeta[`page-${page.id}`] = {
-          type: 'page', page, keywordResults: [], hasHiringSurge, sendToAI: false
-        };
+        itemMeta[`page-${page.id}`] = { type: 'page', page, keywordResults: [], hasHiringSurge, sendToAI: false };
         continue;
       }
 
@@ -303,16 +325,13 @@ async function generateSignals() {
     for (const news of newsEntries) {
       const itemId = `news-${news.id}`;
       aiItems.push({ id: itemId, type: 'news', text: `${news.title} ${news.snippet}` });
-      itemMeta[itemId] = {
-        type: 'news', news, keywordResults: [], hasHiringSurge: false,
-        sendToAI: true, sourceUrl: news.article_url
-      };
+      itemMeta[itemId] = { type: 'news', news, keywordResults: [], hasHiringSurge: false, sendToAI: true, sourceUrl: news.article_url };
     }
   }
 
   let aiResult = {};
   if (aiItems.length > 0) {
-    console.log(`Sending ${aiItems.length} items to AI in ${Math.ceil(aiItems.length / CHUNK_SIZE)} chunks...`);
+    console.log(`Sending ${aiItems.length} items in ${Math.ceil(aiItems.length / CHUNK_SIZE)} chunks...`);
     aiResult = await batchDetectSignals(aiItems);
   }
 
@@ -345,21 +364,40 @@ async function generateSignals() {
     const aiDecision = aiResult[itemId];
     if (meta.sendToAI && aiDecision?.signals?.length > 0) {
       if (!companySignalsMap.has(companyId)) {
-        companySignalsMap.set(companyId, { companyName: company.company_name, websiteUrl: company.website_url, signalTypes: new Set(), explanations: [], sources: [], confidence: 0 });
+        companySignalsMap.set(companyId, {
+          companyName: company.company_name,
+          websiteUrl: company.website_url,
+          isFeatured: company.is_featured === true,
+          signalTypes: new Set(),
+          explanations: [],
+          sources: [],
+          confidence: 0
+        });
       }
       const entry = companySignalsMap.get(companyId);
       for (const t of aiDecision.signals) entry.signalTypes.add(t);
       if (aiDecision.explanation && !entry.explanations.includes(aiDecision.explanation)) entry.explanations.push(aiDecision.explanation);
       const normalized = normalizeUrl(meta.sourceUrl);
       if (normalized && !entry.sources.some(s => s.url === normalized)) {
-        entry.sources.push({ label: meta.type === 'page' ? `${meta.page.page_type}: ${meta.page.page_url}` : `News: ${meta.news.title}`, url: normalized });
+        entry.sources.push({
+          label: meta.type === 'page' ? `${meta.page.page_type}: ${meta.page.page_url}` : `News: ${meta.news.title}`,
+          url: normalized
+        });
       }
       if (aiDecision.confidence > entry.confidence) entry.confidence = aiDecision.confidence;
     }
 
     if (meta.type === 'page' && meta.hasHiringSurge) {
       if (!companySignalsMap.has(companyId)) {
-        companySignalsMap.set(companyId, { companyName: company.company_name, websiteUrl: company.website_url, signalTypes: new Set(), explanations: [], sources: [], confidence: 90 });
+        companySignalsMap.set(companyId, {
+          companyName: company.company_name,
+          websiteUrl: company.website_url,
+          isFeatured: company.is_featured === true,
+          signalTypes: new Set(),
+          explanations: [],
+          sources: [],
+          confidence: 90
+        });
       }
       const entry = companySignalsMap.get(companyId);
       entry.signalTypes.add('hiring');
@@ -372,6 +410,7 @@ async function generateSignals() {
     }
   }
 
+  // Create signals. company is now available via data.isFeatured and data.companyName.
   for (const [companyId, data] of companySignalsMap.entries()) {
     const signalTypes = [...data.signalTypes];
     if (signalTypes.length === 0) continue;
@@ -381,7 +420,7 @@ async function generateSignals() {
     const signalDetail = detail.length > 180 ? detail.slice(0, 177) + '...' : detail;
     const confidence = data.confidence || 50;
 
-    if (company.is_featured) {
+    if (data.isFeatured) {
       const { error } = await supabase.from('signals').insert({
         lead_id: null,
         user_id: null,
@@ -397,6 +436,7 @@ async function generateSignals() {
         is_hidden: false
       });
       if (!error) console.log(`  Featured: ${data.companyName}`);
+      else console.error(`  Error inserting featured signal: ${error.message}`);
     }
 
     const { data: leads } = await supabase
@@ -442,4 +482,4 @@ async function generateSignals() {
 generateSignals().catch(err => {
   console.error('Fatal error:', err);
   process.exit(1);
-});
+}); 
