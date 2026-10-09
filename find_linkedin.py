@@ -31,7 +31,7 @@ print(f"Processing {len(domains)} domains (cap: {MAX_DOMAINS})")
 TITLES = ["SDR", "BDR", "Sales Development Representative", "Business Development Representative"]
 
 profiles = []
-seen_urls = set()
+seen_usernames = set()
 searches_done = 0
 domains_completed = []
 
@@ -39,8 +39,11 @@ for company_domain in domains:
     if searches_done >= MAX_SEARCHES:
         break
 
+    all_titles_done = True
+
     for title in TITLES:
         if searches_done >= MAX_SEARCHES:
+            all_titles_done = False
             break
 
         query = f'site:linkedin.com/in "{title}" "@{company_domain}"'
@@ -56,7 +59,7 @@ for company_domain in domains:
         )
 
         try:
-            with urllib.request.urlopen(req, timeout=60) as resp:
+            with urllib.request.urlopen(req, timeout=90) as resp:
                 raw = resp.read().decode('utf-8')
         except Exception as e:
             print(f"  Error {title} @ {company_domain}: {e}")
@@ -74,20 +77,33 @@ for company_domain in domains:
         results = data if isinstance(data, list) else data.get('organic', [])
 
         for item in results:
-            if not isinstance(item, dict): continue
+            if not isinstance(item, dict):
+                continue
             link = item.get('link', '') or item.get('url', '')
             item_title = item.get('title', '')
 
-            if 'linkedin.com/in/' not in link: continue
-            if link in seen_urls: continue
-            seen_urls.add(link)
+            if 'linkedin.com/in/' not in link:
+                continue
+
+            # Dedupe by LinkedIn username, not full URL
+            username_match = re.search(r'/in/([^/?]+)', link)
+            if not username_match:
+                continue
+            username = username_match.group(1).lower().rstrip('/')
+            if username in seen_usernames:
+                continue
+            seen_usernames.add(username)
 
             name_part = item_title
+
+            # Strip trailing certifications FIRST (before removing special chars)
+            name_part = re.sub(r',\s*[A-Z]{2,}$', '', name_part).strip()
+            # Strip titles after separators
             for sep in [' – ', ' - ', ' | ', ' at ', ' @ ', ' — ']:
                 if sep in name_part:
                     name_part = name_part.split(sep)[0]
+            # Now remove remaining special characters
             name_part = re.sub(r'[^\w\s\'.\-]', '', name_part).strip()
-            name_part = re.sub(r',\s*[A-Z]{2,}$', '', name_part).strip()
 
             if name_part and len(name_part.split()) >= 2:
                 profiles.append({
@@ -98,7 +114,8 @@ for company_domain in domains:
 
         time.sleep(1)
 
-    domains_completed.append(company_domain)
+    if all_titles_done:
+        domains_completed.append(company_domain)
 
 with open('linkedin-profiles.json', 'w') as f:
     json.dump(profiles, f, indent=2)
