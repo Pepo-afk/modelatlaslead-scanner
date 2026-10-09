@@ -9,8 +9,8 @@ const supabase = createClient(
 );
 
 const MAX_ARTICLE_AGE_DAYS = 7;
-const NEWS_BATCH_SIZE = 5000;
-const NEWS_CONCURRENCY = 5; // Reduced from 20 to avoid 503s
+const NEWS_BATCH_SIZE = 1000;
+const NEWS_CONCURRENCY = 5;
 const DB_PAGE_SIZE = 1000;
 
 function isArticleRecent(pubDate) {
@@ -22,10 +22,7 @@ function isArticleRecent(pubDate) {
 }
 
 async function getProcessedUrls(companyId) {
-  const { data } = await supabase
-    .from('news_articles')
-    .select('article_url')
-    .eq('company_id', companyId);
+  const { data } = await supabase.from('news_articles').select('article_url').eq('company_id', companyId);
   return new Set((data || []).map(row => row.article_url));
 }
 
@@ -43,8 +40,7 @@ async function scanCompanyNews(company) {
   const query = encodeURIComponent(`"${name}" (funding OR hiring OR launch OR partnership OR expansion OR rebranding OR leadership)`);
   const rssUrl = `https://news.google.com/rss/search?q=${query}&hl=en&gl=US&ceid=US:en`;
 
-  // Random delay between 1 and 3 seconds to avoid rate limits
-  await new Promise(r => setTimeout(r, Math.random() * 2000 + 1000));
+  await new Promise(r => setTimeout(r, Math.random() * 3000 + 2000));
 
   let feed;
   try {
@@ -88,9 +84,7 @@ async function scanCompanyNews(company) {
     await markArticleProcessed(company.id, link, title, item.pubDate);
   }
 
-  if (newArticles > 0) {
-    console.log(`  ${company.company_name}: ${newArticles} new articles`);
-  }
+  if (newArticles > 0) console.log(`  ${company.company_name}: ${newArticles} new articles`);
 }
 
 async function concurrentMap(items, limit, asyncFn) {
