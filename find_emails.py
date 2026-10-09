@@ -46,35 +46,27 @@ calls = 0
 MAX_CALLS = 500
 
 for p in profiles:
-    if calls >= MAX_CALLS:
-        break
+    if calls >= MAX_CALLS: break
 
     name = p.get('name', '').strip()
     domain = p.get('company_domain', '').strip()
-
-    if not name or not domain:
-        continue
+    if not name or not domain: continue
 
     parts = name.split()
-    if len(parts) < 2:
-        continue
+    if len(parts) < 2: continue
     first, last = parts[0], parts[-1]
-
-    if len(first) < 2 or len(last) < 2:
-        continue
+    if len(first) < 2 or len(last) < 2: continue
 
     found = False
     for candidate in generate_permutations(first, last, domain):
-        if calls >= MAX_CALLS or found:
-            break
-        if candidate in seen_emails:
-            continue
+        if calls >= MAX_CALLS or found: break
+        if candidate in seen_emails: continue
         seen_emails.add(candidate)
         calls += 1
 
         try:
             result = verify_email(candidate)
-        except Exception as e:
+        except Exception:
             continue
 
         is_valid = (
