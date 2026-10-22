@@ -7,6 +7,7 @@ const supabase = createClient(
 );
 
 const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY;
+const RESEND_API_KEY = process.env.RESEND_API_KEY;
 const CHUNK_SIZE = 5;
 
 const SIGNAL_LIMITS = { free: 1, starter: 30, growth: 60, pro: 200 };
@@ -169,7 +170,6 @@ async function callOpenRouter(prompt, retries = 3) {
     const finishReason = choice?.finish_reason;
     const content = message?.content;
 
-    // Non-retryable: content filter or provider error
     if (finishReason === 'content_filter') {
       console.warn('  Skipping (content_filter)');
       return {};
@@ -179,32 +179,25 @@ async function callOpenRouter(prompt, retries = 3) {
       return {};
     }
 
-    // Try content first
     if (content) {
       try {
         return extractJsonObject(content);
       } catch (e) {
-        // Content exists but is not JSON. If it is short and contains no braces, it is a refusal. Skip.
         if (content.length < 80 && !content.includes('{')) {
           console.warn(`  Skipping (non-JSON content: "${content.slice(0, 40)}")`);
           return {};
         }
-        // Otherwise, fall through to reasoning fallback
       }
     }
 
-    // Fallback: check reasoning field for valid JSON
     if (message?.reasoning) {
       try {
         const parsed = extractJsonObject(message.reasoning);
         console.log('  Recovered from reasoning field');
         return parsed;
-      } catch (e) {
-        // reasoning was just thinking text, not JSON
-      }
+      } catch (e) {}
     }
 
-    // No usable content. Retry.
     if (attempt < retries) {
       console.warn('  Retrying (no usable content)');
       await new Promise(r => setTimeout(r, 3000));
@@ -215,6 +208,7 @@ async function callOpenRouter(prompt, retries = 3) {
   throw new Error('All retries exhausted');
 }
 
+// MODIFIED: Added suggested_opener
 function buildBatchPrompt(items) {
   let prompt = "Detect business signals. Return JSON only. No thinking, no explanation.\n\n";
   prompt += "Valid signals: funding, hiring, launch, partnership, expansion, rebranding, leadership, growth.\n";
@@ -224,7 +218,7 @@ function buildBatchPrompt(items) {
   prompt += "- Ignore 'X powers Y businesses', 'X has Z integrations', founding years, team size, awards.\n";
   prompt += "- If no signal, return empty array for that ID.\n\n";
   prompt += "Output format (JSON only, no other text):\n";
-  prompt += "{\"ID\": {\"signals\": [], \"explanation\": \"\", \"confidence\": 0, \"source_url\": null}}\n\n";
+  prompt += "{\"ID\": {\"signals\": [], \"explanation\": \"\", \"suggested_opener\": \"Hey, saw you just raised...\", \"confidence\": 0, \"source_url\": null}}\n\n";
   prompt += "Items to analyze:\n\n";
 
   for (const item of items) {
@@ -256,6 +250,37 @@ async function batchDetectSignals(items) {
     }
   }
   return combinedResult;
+}
+
+// ADDED: Resend Watchlist Alerts (Point 5)
+async function sendInstantAlerts(companyId, companyName, signalDetail, suggestedOpener) {
+  const { data: watchers } = await supabase
+    .from('watchlists')
+    .select('user_id, profiles(email)')
+    .eq('company_id', companyId)
+    .eq('instant_alerts', true);
+
+  if (!watchers || watchers.length === 0) return;
+
+  for (const watcher of watchers) {
+    const email = watcher.profiles?.email;
+    if (!email) continue;
+
+    await fetch('https://api.resend.com/emails', {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${RESEND_API_KEY}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        from: 'ModelAtlas <hello@modelatlas.net>',
+        to: email,
+        subject: `🚨 Trigger: ${companyName} just fired a signal`,
+        html: `<h2>Instant Watchlist Alert</h2>
+               <p><strong>${companyName}</strong> just had a new event:</p>
+               <blockquote>${signalDetail}</blockquote>
+               <p><strong>Suggested Opener:</strong><br/> "${suggestedOpener}"</p>
+               <p><a href="https://modelatlas.net">Log in to view the source</a></p>`
+      })
+    });
+  }
 }
 
 // ---------- MAIN ----------
@@ -362,7 +387,9 @@ async function generateSignals() {
     if (!company) continue;
 
     const aiDecision = aiResult[itemId];
-    if (meta.sendToAI && aiDecision?.signals?.length > 0) {
+    
+    // POINT 10: Filter noise (confidence >= 70)
+    if (meta.sendToAI && aiDecision?.signals?.length > 0 && aiDecision.confidence >= 70) {
       if (!companySignalsMap.has(companyId)) {
         companySignalsMap.set(companyId, {
           companyName: company.company_name,
@@ -371,6 +398,7 @@ async function generateSignals() {
           signalTypes: new Set(),
           explanations: [],
           sources: [],
+          suggestedOpener: aiDecision.suggested_opener || '',
           confidence: 0
         });
       }
@@ -396,6 +424,7 @@ async function generateSignals() {
           signalTypes: new Set(),
           explanations: [],
           sources: [],
+          suggestedOpener: 'Saw you are expanding the team. Are you looking for more support on the outbound side?',
           confidence: 90
         });
       }
@@ -410,7 +439,6 @@ async function generateSignals() {
     }
   }
 
-  // Create signals. company is now available via data.isFeatured and data.companyName.
   for (const [companyId, data] of companySignalsMap.entries()) {
     const signalTypes = [...data.signalTypes];
     if (signalTypes.length === 0) continue;
@@ -427,6 +455,7 @@ async function generateSignals() {
         type: 'multi',
         description,
         signal_detail: signalDetail,
+        suggested_opener: data.suggestedOpener, // POINT 7
         source_url: data.websiteUrl,
         source_urls: data.sources,
         confidence,
@@ -437,6 +466,9 @@ async function generateSignals() {
       });
       if (!error) console.log(`  Featured: ${data.companyName}`);
       else console.error(`  Error inserting featured signal: ${error.message}`);
+      
+      // POINT 5: Trigger instant watchlist alerts
+      await sendInstantAlerts(companyId, data.companyName, signalDetail, data.suggestedOpener);
     }
 
     const { data: leads } = await supabase
@@ -461,6 +493,7 @@ async function generateSignals() {
           type: 'multi',
           description,
           signal_detail: signalDetail,
+          suggested_opener: data.suggestedOpener,
           source_url: data.websiteUrl,
           source_urls: data.sources,
           confidence,
