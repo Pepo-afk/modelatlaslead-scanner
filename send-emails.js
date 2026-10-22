@@ -24,32 +24,15 @@ async function getProfile(userId) {
     .select('plan, sender_name, ai_enabled, email, notify_signals, auto_pilot')
     .eq('id', userId)
     .single();
-  return profile || {
-    plan: 'free',
-    sender_name: DEFAULT_FROM_NAME,
-    ai_enabled: false,
-    email: null,
-    notify_signals: true,
-    auto_pilot: false
-  };
+  return profile || { plan: 'free', sender_name: DEFAULT_FROM_NAME, ai_enabled: false, email: null, notify_signals: true, auto_pilot: false };
 }
 
 async function generateAIEmail(firstName, company, signalDetail, userContext, senderName, userId) {
   try {
     const response = await fetch('https://modelatlas.net/api/generate-ai-email.php', {
       method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${process.env.SERVER_API_KEY}`,
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({
-        lead_first_name: firstName,
-        company_name: company,
-        signal_detail: signalDetail,
-        user_context: userContext || '',
-        sender_name: senderName,
-        user_id: userId
-      })
+      headers: { 'Authorization': `Bearer ${process.env.SERVER_API_KEY}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ lead_first_name: firstName, company_name: company, signal_detail: signalDetail, user_context: userContext || '', sender_name: senderName, user_id: userId })
     });
     if (!response.ok) throw new Error(`AI relay failed: ${await response.text()}`);
     const data = await response.json();
@@ -63,45 +46,39 @@ async function generateAIEmail(firstName, company, signalDetail, userContext, se
 async function sendEmailViaResend(fromAddress, to, subject, htmlBody, textBody) {
   const response = await fetch('https://api.resend.com/emails', {
     method: 'POST',
-    headers: {
-      'Authorization': `Bearer ${RESEND_API_KEY}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({
-      from: fromAddress,
-      to: to,
-      subject: subject,
-      html: htmlBody,
-      text: textBody,
-    }),
+    headers: { 'Authorization': `Bearer ${RESEND_API_KEY}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ from: fromAddress, to, subject, html: htmlBody, text: textBody }),
   });
-
-  if (!response.ok) {
-    const error = await response.text();
-    throw new Error(`Resend API error: ${response.status} ${error}`);
-  }
+  if (!response.ok) throw new Error(`Resend API error: ${response.status} ${await response.text()}`);
   return response.json();
 }
 
-// ---------- USER NOTIFICATION ----------
-async function sendUserNotification(userEmail, companyName, signalDescription) {
-  const subject = `You have a new signal for ${companyName}`;
-  const html = `<p>A new signal was detected for <strong>${companyName}</strong>:</p>
-                <p><em>${signalDescription}</em></p>
-                <p><a href="https://modelatlas.net">View it on ModelAtlas</a></p>`;
-  const text = `You have a new signal for ${companyName}: ${signalDescription}\n\nView it here: https://modelatlas.net`;
+// ---------- NEW: SUMMARY NOTIFICATION (Point 9) ----------
+async function sendSummaryNotification(userEmail, signals) {
+  const count = signals.length;
+  const topSignal = signals[0]; // Assuming highest confidence is first
+  const company = topSignal.company_name || 'a company';
+  const detail = topSignal.signal_detail || topSignal.description;
+  const opener = topSignal.suggested_opener || '';
+
+  const subject = `You have ${count} new signals today`;
+  const html = `
+    <h2>You have ${count} new signals today</h2>
+    <p>Here is your top signal:</p>
+    <div style="background: #f9fafb; padding: 15px; border-left: 4px solid #4F46E5; margin-bottom: 20px;">
+      <h3 style="margin-top: 0;">${company}</h3>
+      <p>${detail}</p>
+      ${opener ? `<p><em>"${opener}"</em></p>` : ''}
+    </div>
+    <p><a href="https://modelatlas.net">Log in to ModelAtlas to see the rest</a></p>
+  `;
+  const text = `You have ${count} new signals today.\n\nTop signal at ${company}: ${detail}\n\nLog in to see the rest: https://modelatlas.net`;
 
   try {
-    await sendEmailViaResend(
-      `ModelAtlas <${FROM_DOMAIN}>`,
-      userEmail,
-      subject,
-      html,
-      text
-    );
-    console.log(`  ✅ Notification sent to ${userEmail}`);
+    await sendEmailViaResend(`ModelAtlas <${FROM_DOMAIN}>`, userEmail, subject, html, text);
+    console.log(`  ✅ Summary sent to ${userEmail} (${count} signals)`);
   } catch (err) {
-    console.error(`  ❌ Failed to send notification to ${userEmail}:`, err.message);
+    console.error(`  ❌ Failed to send summary to ${userEmail}:`, err.message);
   }
 }
 
@@ -111,103 +88,91 @@ async function processPendingSignals() {
 
   const { data: signals, error } = await supabase
     .from('signals')
-    .select('id, lead_id, user_id, description, signal_detail, source_url, email_subject')
+    .select('id, lead_id, user_id, description, signal_detail, suggested_opener, source_url, email_subject')
     .eq('email_status', 'pending');
 
-  if (error) {
-    console.error('Error fetching signals:', error.message);
-    return;
-  }
-
-  if (!signals || signals.length === 0) {
+  if (error || !signals || signals.length === 0) {
     console.log('No pending signals.');
     return;
   }
 
   console.log(`Found ${signals.length} pending signal(s).`);
 
+  // Group signals by user to prevent spamming notifications
+  const signalsByUser = {};
   for (const signal of signals) {
-    const profile = await getProfile(signal.user_id);
+    if (!signalsByUser[signal.user_id]) signalsByUser[signal.user_id] = [];
+    signalsByUser[signal.user_id].push(signal);
+  }
+
+  for (const [userId, userSignals] of Object.entries(signalsByUser)) {
+    const profile = await getProfile(userId);
     const plan = profile.plan;
     const senderName = profile.sender_name || DEFAULT_FROM_NAME;
     const fromAddress = `${senderName} <${FROM_DOMAIN}>`;
 
-    const { data: lead, error: leadError } = await supabase
-      .from('leads')
-      .select('id, email, company_name, name')
-      .eq('id', signal.lead_id)
-      .single();
-
-    if (leadError || !lead || !lead.email) {
-      console.log(`  Skipping signal ${signal.id}: no lead email.`);
-      await supabase.from('signals').update({ email_status: 'no_email' }).eq('id', signal.id);
-      continue;
+    // Send ONE summary notification to the user
+    if (profile.email && profile.notify_signals !== false) {
+      await sendSummaryNotification(profile.email, userSignals);
     }
 
-    // Should this signal be held for manual approval?
-    const manualApproval = (plan === 'free') || (profile.auto_pilot === false);
+    for (const signal of userSignals) {
+      const { data: lead } = await supabase.from('leads').select('id, email, company_name, name').eq('id', signal.lead_id).single();
 
-    if (manualApproval) {
-      console.log(`  Manual approval – marking signal ${signal.id} as awaiting_approval.`);
-      await supabase.from('signals').update({ email_status: 'awaiting_approval' }).eq('id', signal.id);
-
-      // Send notification to the user if we have their email and they haven't disabled notifications
-      if (profile.email && profile.notify_signals !== false) {
-        const signalDesc = signal.signal_detail || signal.description;
-        await sendUserNotification(profile.email, lead.company_name || 'a company', signalDesc);
-      } else {
-        console.log('  User has no email or disabled notifications, skipping notification.');
+      if (!lead || !lead.email) {
+        await supabase.from('signals').update({ email_status: 'no_email' }).eq('id', signal.id);
+        continue;
       }
-      continue;
-    }
 
-    // ---------- AUTO‑PILOT (paid users with auto_pilot on) ----------
-    const firstName = getFirstName(lead.name);
-    const company = lead.company_name || 'the company';
-    const subject = signal.email_subject || `Quick update about ${company}`;
-    const signalDetail = signal.signal_detail || signal.description;
-
-    let htmlBody = '';
-    let textBody = '';
-
-    if (profile.ai_enabled) {
-      console.log('  AI generation enabled, calling PHP relay...');
-      const aiBody = await generateAIEmail(firstName, company, signalDetail, '', senderName, signal.user_id);
-      if (aiBody) {
-        htmlBody = `<p>${aiBody.replace(/\n/g, '<br>')}</p>`;
-        textBody = aiBody;
+      // Manual approval path
+      const manualApproval = (plan === 'free') || (profile.auto_pilot === false);
+      if (manualApproval) {
+        await supabase.from('signals').update({ email_status: 'awaiting_approval' }).eq('id', signal.id);
+        continue;
       }
-    }
 
-    if (!htmlBody) {
-      htmlBody = `
-        <p>Hi ${firstName},</p>
-        <p>I saw that ${company} just ${signalDetail}. That seemed like a good reason to reach out again.</p>
-        <p>Are you still involved with them, or has anything changed on your end?</p>
-        <p>If now is a bad time, no worries at all — just let me know.</p>
-        <p>Best,<br>${senderName}</p>
-      `;
-      textBody = `Hi ${firstName},\n\nI saw that ${company} just ${signalDetail}. That seemed like a good reason to reach out again.\n\nAre you still involved with them, or has anything changed on your end?\n\nIf now is a bad time, no worries at all — just let me know.\n\nBest,\n${senderName}`;
-    }
+      // Auto-pilot path
+      const firstName = getFirstName(lead.name);
+      const company = lead.company_name || 'the company';
+      const subject = signal.email_subject || `Quick update about ${company}`;
+      const signalDetail = signal.signal_detail || signal.description;
+      const suggestedOpener = signal.suggested_opener || '';
 
-    // Free‑tier signature only if plan is free
-    if (plan === 'free') {
-      htmlBody += `<p style="color:#888; font-size:12px; margin-top:20px;">Sent with ModelAtlas – reactivate dead leads automatically.</p>`;
-    }
+      let htmlBody = '';
+      let textBody = '';
 
-    try {
-      await sendEmailViaResend(fromAddress, lead.email, subject, htmlBody, textBody);
-      console.log(`  ✅ Email sent to ${lead.email} from "${senderName}" (signal ${signal.id})`);
+      if (profile.ai_enabled) {
+        const aiBody = await generateAIEmail(firstName, company, signalDetail, '', senderName, signal.user_id);
+        if (aiBody) {
+          htmlBody = `<p>${aiBody.replace(/\n/g, '<br>')}</p>`;
+          textBody = aiBody;
+        }
+      }
 
-      await supabase.from('signals').update({
-        email_status: 'sent',
-        sent_at: new Date().toISOString(),
-        email_body: htmlBody
-      }).eq('id', signal.id);
+      if (!htmlBody) {
+        // Inject the suggested opener into the fallback template
+        const openerText = suggestedOpener ? `"${suggestedOpener}"` : `I saw that ${company} just ${signalDetail}. That seemed like a good reason to reach out again.`;
+        htmlBody = `
+          <p>Hi ${firstName},</p>
+          <p>${openerText}</p>
+          <p>Are you still involved with them, or has anything changed on your end?</p>
+          <p>If now is a bad time, no worries at all — just let me know.</p>
+          <p>Best,<br>${senderName}</p>
+        `;
+        textBody = `Hi ${firstName},\n\n${openerText}\n\nAre you still involved with them, or has anything changed on your end?\n\nIf now is a bad time, no worries at all — just let me know.\n\nBest,\n${senderName}`;
+      }
 
-    } catch (err) {
-      console.error(`  ❌ Failed to send email for signal ${signal.id}:`, err.message);
-      await supabase.from('signals').update({ email_status: 'error' }).eq('id', signal.id);
+      if (plan === 'free') {
+        htmlBody += `<p style="color:#888; font-size:12px; margin-top:20px;">Sent with ModelAtlas – reactivate dead leads automatically.</p>`;
+      }
+
+      try {
+        await sendEmailViaResend(fromAddress, lead.email, subject, htmlBody, textBody);
+        await supabase.from('signals').update({ email_status: 'sent', sent_at: new Date().toISOString(), email_body: htmlBody }).eq('id', signal.id);
+        console.log(`  ✅ Outreach sent to ${lead.email}`);
+      } catch (err) {
+        await supabase.from('signals').update({ email_status: 'error' }).eq('id', signal.id);
+      }
     }
   }
 
@@ -218,4 +183,4 @@ async function processPendingSignals() {
 processPendingSignals().catch(err => {
   console.error(err);
   process.exit(1);
-});
+}); 
