@@ -10,7 +10,7 @@ const supabase = createClient(
 );
 
 const RESEND_API_KEY = process.env.RESEND_API_KEY;
-const FROM_DOMAIN = 'hello@modelatlas.net';
+const DEFAULT_FROM_DOMAIN = 'hello@modelatlas.net';
 const DEFAULT_FROM_NAME = 'ModelAtlas';
 
 function getFirstName(fullName) {
@@ -21,10 +21,21 @@ function getFirstName(fullName) {
 async function getProfile(userId) {
   const { data: profile } = await supabase
     .from('profiles')
-    .select('plan, sender_name, ai_enabled, email, notify_signals, auto_pilot')
+    .select('plan, sender_name, ai_enabled, email, notify_signals, auto_pilot, custom_domain, domain_verified, digest_frequency')
     .eq('id', userId)
     .single();
-  return profile || { plan: 'free', sender_name: DEFAULT_FROM_NAME, ai_enabled: false, email: null, notify_signals: true, auto_pilot: false };
+    
+  return profile || { 
+    plan: 'free', 
+    sender_name: DEFAULT_FROM_NAME, 
+    ai_enabled: false, 
+    email: null, 
+    notify_signals: true, 
+    auto_pilot: false,
+    custom_domain: null,
+    domain_verified: false,
+    digest_frequency: 'weekly'
+  };
 }
 
 async function generateAIEmail(firstName, company, signalDetail, userContext, senderName, userId) {
@@ -53,13 +64,20 @@ async function sendEmailViaResend(fromAddress, to, subject, htmlBody, textBody) 
   return response.json();
 }
 
-// ---------- NEW: SUMMARY NOTIFICATION (Point 9) ----------
-async function sendSummaryNotification(userEmail, signals) {
+// ---------- NEW: SUMMARY NOTIFICATION WITH DOMAIN LOGIC ----------
+async function sendSummaryNotification(userEmail, signals, profile) {
   const count = signals.length;
-  const topSignal = signals[0]; // Assuming highest confidence is first
+  const topSignal = signals[0];
   const company = topSignal.company_name || 'a company';
   const detail = topSignal.signal_detail || topSignal.description;
   const opener = topSignal.suggested_opener || '';
+
+  // Determine domain and footer based on verification status
+  const isVerified = profile.custom_domain && profile.domain_verified === true;
+  const fromEmail = isVerified ? profile.custom_domain : DEFAULT_FROM_DOMAIN;
+  const fromAddress = `${profile.sender_name || DEFAULT_FROM_NAME} <${fromEmail}>`;
+  
+  const footer = isVerified ? '' : `<p style="color:#888; font-size:12px; margin-top:20px;">Sent via ModelAtlas. Connect a custom domain to remove this footer.</p>`;
 
   const subject = `You have ${count} new signals today`;
   const html = `
@@ -71,12 +89,13 @@ async function sendSummaryNotification(userEmail, signals) {
       ${opener ? `<p><em>"${opener}"</em></p>` : ''}
     </div>
     <p><a href="https://modelatlas.net">Log in to ModelAtlas to see the rest</a></p>
+    ${footer}
   `;
   const text = `You have ${count} new signals today.\n\nTop signal at ${company}: ${detail}\n\nLog in to see the rest: https://modelatlas.net`;
 
   try {
-    await sendEmailViaResend(`ModelAtlas <${FROM_DOMAIN}>`, userEmail, subject, html, text);
-    console.log(`  ✅ Summary sent to ${userEmail} (${count} signals)`);
+    await sendEmailViaResend(fromAddress, userEmail, subject, html, text);
+    console.log(`  ✅ Summary sent to ${userEmail} (${count} signals) from ${fromEmail}`);
   } catch (err) {
     console.error(`  ❌ Failed to send summary to ${userEmail}:`, err.message);
   }
@@ -105,15 +124,33 @@ async function processPendingSignals() {
     signalsByUser[signal.user_id].push(signal);
   }
 
+  const isMonday = new Date().getDay() === 1;
+
   for (const [userId, userSignals] of Object.entries(signalsByUser)) {
     const profile = await getProfile(userId);
+    
+    // CHECK DIGEST FREQUENCY
+    if (profile.digest_frequency === 'off') {
+      console.log(`  Skipping user ${userId}: Digest is OFF.`);
+      continue;
+    }
+    if (profile.digest_frequency === 'weekly' && !isMonday) {
+      console.log(`  Skipping user ${userId}: Weekly digest only sends on Mondays.`);
+      continue;
+    }
+
     const plan = profile.plan;
     const senderName = profile.sender_name || DEFAULT_FROM_NAME;
-    const fromAddress = `${senderName} <${FROM_DOMAIN}>`;
+    
+    // Determine domain and footer for OUTREACH emails
+    const isVerified = profile.custom_domain && profile.domain_verified === true;
+    const fromEmail = isVerified ? profile.custom_domain : DEFAULT_FROM_DOMAIN;
+    const fromAddress = `${senderName} <${fromEmail}>`;
+    const unverifiedFooter = isVerified ? '' : `<p style="color:#888; font-size:12px; margin-top:20px;">Sent via ModelAtlas. Connect a custom domain to remove this footer.</p>`;
 
     // Send ONE summary notification to the user
     if (profile.email && profile.notify_signals !== false) {
-      await sendSummaryNotification(profile.email, userSignals);
+      await sendSummaryNotification(profile.email, userSignals, profile);
     }
 
     for (const signal of userSignals) {
@@ -150,7 +187,6 @@ async function processPendingSignals() {
       }
 
       if (!htmlBody) {
-        // Inject the suggested opener into the fallback template
         const openerText = suggestedOpener ? `"${suggestedOpener}"` : `I saw that ${company} just ${signalDetail}. That seemed like a good reason to reach out again.`;
         htmlBody = `
           <p>Hi ${firstName},</p>
@@ -162,14 +198,13 @@ async function processPendingSignals() {
         textBody = `Hi ${firstName},\n\n${openerText}\n\nAre you still involved with them, or has anything changed on your end?\n\nIf now is a bad time, no worries at all — just let me know.\n\nBest,\n${senderName}`;
       }
 
-      if (plan === 'free') {
-        htmlBody += `<p style="color:#888; font-size:12px; margin-top:20px;">Sent with ModelAtlas – reactivate dead leads automatically.</p>`;
-      }
+      // Append the unverified footer (replaces the old free-plan footer)
+      htmlBody += unverifiedFooter;
 
       try {
         await sendEmailViaResend(fromAddress, lead.email, subject, htmlBody, textBody);
         await supabase.from('signals').update({ email_status: 'sent', sent_at: new Date().toISOString(), email_body: htmlBody }).eq('id', signal.id);
-        console.log(`  ✅ Outreach sent to ${lead.email}`);
+        console.log(`  ✅ Outreach sent to ${lead.email} from ${fromEmail}`);
       } catch (err) {
         await supabase.from('signals').update({ email_status: 'error' }).eq('id', signal.id);
       }
@@ -183,4 +218,4 @@ async function processPendingSignals() {
 processPendingSignals().catch(err => {
   console.error(err);
   process.exit(1);
-}); 
+});
