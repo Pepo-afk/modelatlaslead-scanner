@@ -11,17 +11,21 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-node@v4
         with:
-          python-version: '3.11'
+          node-version: '20'
+
+      # CRITICAL: Install Nodemailer and Supabase Client
+      - name: Install dependencies
+        run: npm install @supabase/supabase-js nodemailer
 
       - name: Send emails
         env:
-          MAILTRAP_SMTP_USER: ${{ secrets.MAILTRAP_SMTP_USER }}
-          MAILTRAP_SMTP_PASSWORD: ${{ secrets.MAILTRAP_SMTP_PASSWORD }}
-        run: python send_emails.py leads.json
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+        run: node send-emails.js
 
-      - name: Commit contacted list
+      - name: Commit contacted list (if you use it)
         run: |
           git config user.name "github-actions"
           git config user.email "actions@github.com"
