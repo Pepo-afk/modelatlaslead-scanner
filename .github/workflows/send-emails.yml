@@ -1,7 +1,9 @@
-name: Send Cold Emails
+name: Send App Emails
 
 on:
-  workflow_dispatch:
+  workflow_dispatch: # Allows you to run it manually
+  schedule:
+    - cron: '0 9 * * *' # Runs every day at 9 AM UTC
 
 jobs:
   send:
@@ -15,7 +17,7 @@ jobs:
         with:
           node-version: '20'
 
-      # CRITICAL: Install Nodemailer and Supabase Client
+      # This installs the tools needed for the new JS file
       - name: Install dependencies
         run: npm install @supabase/supabase-js nodemailer
 
@@ -23,12 +25,6 @@ jobs:
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
+          SERVER_API_KEY: ${{ secrets.SERVER_API_KEY }}
         run: node send-emails.js
-
-      - name: Commit contacted list (if you use it)
-        run: |
-          git config user.name "github-actions"
-          git config user.email "actions@github.com"
-          git add contacted.txt
-          git diff --quiet && git diff --staged --quiet || git commit -m "Update contacted list"
-          git push
